@@ -1,52 +1,84 @@
 # HealthPilot
 
-心血管健康评估 Agent 技术演示：中文多轮问诊、急症护栏、风险评估、带引用的健康干预、干预模拟与跨会话随访。浅色响应式界面实时展示 Agent 轨迹、工具调用、耗时和指南来源。
+一个心血管健康评估 Agent 的练习项目。用户在网页上用中文描述健康情况，系统追问缺失信息，计算 10 年心血管病风险，再根据指南摘要给出带引用的生活方式建议。
 
-| JD 能力 | 实现 |
-|---|---|
-| 多 Agent 规划与状态管理 | LangGraph 主图与七个职责子图，确定性 supervisor |
-| 工具调用与世界模型 | MCP 2.x stdio 五个工具、Function Calling 循环、并行计算与 LRU 缓存 |
-| 长短期记忆、PostgreSQL | checkpointer + Store；配置 DATABASE_URL 后启用 Postgres |
-| 医学 RAG 与幻觉控制 | 术语归一、BM25 / 向量 RRF、逐条引用和药物剂量校验 |
-| Prompt 工程与评测 | 四个版本化提示词、节点轨迹、任务/规划/引用/急症/时延指标 |
-| 工程与平台对接 | FastAPI、SSE、OpenAPI 工具接口、Docker 与 GitHub Actions |
+这是技术演示，没有真实用户，也没有经过医学人员审核，不构成医疗建议。
 
-```mermaid
-flowchart TD
-    UI[网页 / SSE] --> API[FastAPI]
-    API --> Safety[急症护栏]
-    Safety -->|急症| Emergency[立即求助 120]
-    Safety --> Intake[合并档案与问诊解析]
-    Intake --> Supervisor[确定性 supervisor]
-    Supervisor --> Ask[问诊子图]
-    Supervisor --> Assess[评估子图]
-    Assess --> Advice[检索 / 干预 / 引用校验子图]
-    Advice --> Followup[随访子图]
-    Supervisor --> Sim[模拟子图]
-    Supervisor --> Checkin[复查子图]
-    Supervisor --> QA[问答子图 / Function Calling]
-    Assess & Sim & Checkin & QA --> MCP[MCP 长连接 / 缓存]
-    API -->|工具 REST 接口| MCP
-    MCP --> Process[独立 MCP 子进程 / 五个健康工具]
-    Intake & Followup & Checkin --> Store[长期 Store / 可选 Postgres]
-    Advice & QA --> RAG[术语库 / BM25 / 可选向量 RRF]
+## 功能
+
+- **多轮问诊**：缺信息时追问，同一会话不用重复已说过的内容
+- **急症护栏**：胸痛、呼吸困难、卒中症状等用关键词规则识别，命中后直接提示拨打 120
+- **风险评估**：Framingham 2008 公式，通过 MCP 工具调用
+- **干预模拟和轨迹推演**：如"戒烟后风险降多少"，以及 5 年、10 年后的风险。都只是代入公式计算
+- **带引用的建议**：BM25 加可选的向量检索，生成后检查引用是否有效、是否出现药物剂量
+- **随访**：换一个会话仍记得档案，可与上次风险对比
+- **网页界面**：实时显示每一步的节点、工具调用和耗时
+
+## 结构
+
+用 LangGraph 编排，每条消息的流程是：
+
+```
+急症检查 → 整理档案 → supervisor 路由 → 问诊 / 评估→建议→随访 / 模拟 / 复查 / 问答
 ```
 
-需要 Python 3.12+。常规环境运行：
+路由是确定性规则，不由模型决定。模型只负责补充抽取信息、撰写建议和回答问题，风险计算、急症判断和引用校验都是普通代码。
+
+| 目录 | 内容 |
+|---|---|
+| `app/` | FastAPI 接口、状态图、检索、校验、记忆 |
+| `mcp_server/` | MCP 工具服务（stdio） |
+| `corpus/` | 16 段指南摘要 |
+| `web/` | 前端，纯 HTML + JS，无构建步骤 |
+| `eval/` | 评测脚本和 26 条用例 |
+| `docs/` | 设计文档、部署说明 |
+
+## 运行
+
+需要 Python 3.12+ 和 [uv](https://docs.astral.sh/uv/)。
+
+不调用模型（用模板生成回复，不需要 key）：
 
 ```bash
 uv sync
 HEALTH_AGENT_MOCK=1 uv run uvicorn app.main:app --port 8000
+```
+
+使用真实模型，需要在 `.env` 里配置千问的 OpenAI 兼容接口：
+
+```
+QWEN_API_KEY=...
+QWEN_BASE_URL=...
+QWEN_MODEL=qwen3.6-plus
+QWEN_EMBEDDING_MODEL=qwen3.7-text-embedding   # 可选，不填只用 BM25
+```
+
+```bash
+uv run uvicorn app.main:app --port 8000
+```
+
+然后打开 http://localhost:8000 。模型调用失败时会退回模板回复，并在轨迹里提示。
+
+## 测试和评测
+
+```bash
 uv run pytest -q
 uv run python -m eval.run_eval --mock
 ```
 
-访问 http://localhost:8000。已有依赖的离线环境可用 `.venv/bin/python -m pytest -q` 和 `.venv/bin/python -m eval.run_eval --mock`。
+2026-10-30 用 `qwen3.6-plus` 跑了一次真实模型评测：26 条用例全部通过，每轮响应 p50 约 3.7 秒、p95 约 5.2 秒。
 
-真实模式在本地 `.env` 配置 `QWEN_API_KEY`、`QWEN_BASE_URL`、`QWEN_MODEL`，不设置 `HEALTH_AGENT_MOCK=1`，运行 `uv run uvicorn app.main:app --port 8000`。可选 `QWEN_EMBEDDING_MODEL` 启用向量融合；模型失败降级为模板并记录 `degraded: true`，向量失败退回 BM25。`uv run python -m eval.run_eval --judge` 可额外评价交互体验。
+这个结果的参考价值有限：用例是开发时自己写的，数量很少；"医学事实性"一项只检查引用是否有效，不检查内容是否正确。
 
-可选 `DATABASE_URL` 启用 Postgres checkpointer 与 Store，启动时自动 setup；未配置时记忆仅保留在当前进程。`runs/traces/` 保存逐轮轨迹，`eval/results/` 保存评测 JSON。轨迹含健康信息，仅适合受控演示环境，部署与访问控制见 [部署说明](docs/DEPLOY.md)。`/docs` 提供五个工具的独立请求模型，`/openapi.json` 可导入 Dify / Coze。
+## 已知限制
 
-“新会话”保留浏览器身份和长期记忆；“清除身份”生成新身份，不删除服务端历史。项目不包含账号认证。真实千问、Postgres 与生产部署需在具备网络及数据库的环境完成验证。
+- **风险模型**：Framingham 基于美国人群，可能高估中国人群风险，国内更适合用 China-PAR。这里还没有实现
+- **语料**：只有 16 段摘要，按公开指南要点撰写，没有逐条对照原文，也没有文献和药品说明书
+- **急症识别**：只靠关键词规则，换种说法可能识别不出来
+- **未实际运行过**：Docker 镜像、docker-compose、Postgres 存储的代码和配置都写了，但还没跑过，部署文档同样未经验证
+- **规模**：只做过单人使用，没有压测；默认的记忆存在内存里，重启就丢
+- **安全**：没有账号体系，长期记忆只靠浏览器里的一个 ID 区分用户。不要录入真实健康信息
 
-仅为技术演示，不构成医疗建议。语料为公开指南要点摘要，引用通过不等于独立医学事实审查。Framingham 基于美国人群，可能高估中国人群风险，国内推荐 China-PAR；模拟和轨迹不代表个人实际获益或未来结果。急症请立即拨打120。
+## 开发说明
+
+设计文档和验收测试由 Claude Code 编写，主要实现由 Codex 完成，再由 Claude Code 对照真实模型调试修复。
