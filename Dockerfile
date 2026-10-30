@@ -3,8 +3,8 @@ FROM python:3.12-slim
 COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /usr/local/bin/uv
 
 WORKDIR /app
-ENV UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy \
+# 不预编译字节码：jieba 的大词典文件在小内存机器上会编译超时
+ENV UV_LINK_MODE=copy \
     PYTHONUNBUFFERED=1
 
 # 先只装依赖，代码改动时可以复用这一层缓存
