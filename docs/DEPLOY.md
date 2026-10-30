@@ -36,9 +36,10 @@ docker run --rm caddy:2 caddy hash-password --plaintext '给客户的口令'
 然后写 `.env`：
 
 ```
-QWEN_API_KEY=...            # 下面三行照抄本地 .env
+QWEN_API_KEY=...            # 这四行照抄本地 .env
 QWEN_BASE_URL=...
 QWEN_MODEL=...
+QWEN_EMBEDDING_MODEL=...
 DOMAIN=demo.你的域名.com
 PG_PASSWORD=换成一个随机长密码
 DEMO_USER=client
@@ -68,6 +69,7 @@ git pull && docker compose up -d --build
 ## 6. 演示前检查清单
 
 - [ ] 用手机 4G 打开链接，输入口令，完整走一遍示例对话
+- [ ] 确认模型额度够用：账号开了"只用免费额度"时，额度用完会返回 403，回复会退回模板，轨迹里显示"模型暂不可用"。正式演示前关掉这个模式并充值
 - [ ] 在阿里云百炼控制台给这个 API key 设消费上限
 - [ ] 演示前 10 分钟先跑一轮预热
 - [ ] 笔记本上留一份本地版本作后备：`uv run uvicorn app.main:app --port 8000`

@@ -193,6 +193,28 @@ def test_long_term_memory_checkin_across_threads(client):
     assert node_data(third, "checkin")["previous_risk"] == pytest.approx(11.77, abs=0.01)
 
 
+def test_checkin_still_high_risk_says_so(client):
+    tid = uid()
+    chat(client, tid, FULL_SMOKER)
+    text = reply(chat(client, tid, "我来复查，最近血压130/85"))
+    assert "本次风险：21.4%" in text
+    assert "仍属高风险" in text
+
+
+@pytest.mark.parametrize("age", [28, 80])
+def test_age_out_of_model_range(client, age):
+    tid = uid()
+    events = chat(client, tid, FULL.replace("55岁", f"{age}岁"))
+    assert not [e for e in events if e["type"] == "error"]
+    assert node_data(events, "supervisor")["route"] == "intake_agent"
+    assert "risk_assess" not in nodes(events)
+    assert "30–74" in reply(events)
+    # 之后仍然能问指南类问题，不会一直卡在报错上
+    later = chat(client, tid, "我该怎么减盐？")
+    assert node_data(later, "supervisor")["route"] == "qa_agent"
+    assert "[cite:salt_reduction]" in reply(later)
+
+
 def test_memory_is_per_user(client):
     _post(client, uid(), uid(), FULL)
     events = _post(client, uid(), uid(), "我来复查，最近血压130/85")

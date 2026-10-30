@@ -1,0 +1,20 @@
+name: HealthPilot 验收
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      HEALTH_AGENT_MOCK: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync
+      - run: uv run pytest -q
+      - run: uv run python -m eval.run_eval --mock
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: 评测结果
+          path: eval/results/*.json

@@ -36,3 +36,16 @@ def test_every_item_needs_citation():
 def test_numbered_items_and_blank_lines():
     text = "1. 戒烟 [cite:smoking_cessation]\n\n2. 限盐 [cite:salt_reduction]"
     assert verify_advice(text, ALLOWED).ok
+
+
+def test_blockquote_disclaimer_not_an_item():
+    assert verify_advice("- 限盐 [cite:salt_reduction]\n> 仅为技术演示，不构成医疗建议。", ALLOWED).ok
+
+
+def test_answer_mode_allows_lines_without_citation():
+    text = "BMI 是 27.0，属于超重。\n- 建议减重 [cite:salt_reduction]"
+    assert not verify_advice(text, ALLOWED).ok
+    assert verify_advice(text, ALLOWED, per_item=False).ok
+    assert not verify_advice("BMI 是 27.0", ALLOWED, per_item=False).ok
+    assert not verify_advice("- x [cite:made_up]", ALLOWED, per_item=False).ok
+    assert not verify_advice("- 每天100 mg [cite:salt_reduction]", ALLOWED, per_item=False).ok
