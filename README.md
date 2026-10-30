@@ -59,6 +59,8 @@ uv run uvicorn app.main:app --port 8000
 
 然后打开 http://localhost:8000 。模型调用失败时会退回模板回复，并在轨迹里提示。
 
+用 Docker 部署（含 Postgres、HTTPS 和访问口令）见 [docs/DEPLOY.md](docs/DEPLOY.md)。
+
 ## 测试和评测
 
 ```bash
@@ -75,8 +77,8 @@ uv run python -m eval.run_eval --mock
 - **风险模型**：Framingham 基于美国人群，可能高估中国人群风险，国内更适合用 China-PAR。这里还没有实现
 - **语料**：只有 16 段摘要，按公开指南要点撰写，没有逐条对照原文，也没有文献和药品说明书
 - **急症识别**：只靠关键词规则，换种说法可能识别不出来
-- **未实际运行过**：Docker 镜像、docker-compose、Postgres 存储的代码和配置都写了，但还没跑过，部署文档同样未经验证
-- **规模**：只做过单人使用，没有压测；默认的记忆存在内存里，重启就丢
+- **部署**：docker compose（应用 + Postgres + Caddy）只在本机 arm64 上用 localhost 跑通过，容器删除重建后会话和记忆仍在。还没有部署到真实服务器，x86 镜像和正式域名的证书申请都没验证
+- **规模**：只做过单人使用，没有压测。不配置 `DATABASE_URL` 时记忆存在内存里，重启就丢
 - **安全**：没有账号体系，长期记忆只靠浏览器里的一个 ID 区分用户。不要录入真实健康信息
 
 ## 开发说明
