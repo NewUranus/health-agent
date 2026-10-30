@@ -1,10 +1,10 @@
 # HealthPilot
 
-心血管健康评估 Agent 演示项目。完整规格见 `docs/DESIGN.md`，实现必须与之一致。
+心血管健康评估 Agent 演示项目。完整规格见 `docs/DESIGN.md` 和 `docs/DESIGN_V2.md`（两者冲突时以 V2 为准），实现必须与之一致。
 
 ## 规则
 
-- **禁止修改 `tests/`、`corpus/`、`eval/cases.jsonl`。** 测试不过就改实现。
+- **禁止修改 `tests/`、`corpus/`、`eval/cases.jsonl`、`Dockerfile`、`docker-compose.yml`、`Caddyfile`、`docs/`。** 测试不过就改实现。
 - Agent 调用健康工具必须经过 MCP（`app/mcp_client.py` → `mcp_server/server.py` 子进程），不能直接 import `tools_core` 绕过。
 - 急症护栏、风险计算、引用校验、随访规则是确定性代码，不能交给 LLM。
 - 不在代码或日志里输出 `.env` 中的密钥。

@@ -1,0 +1,47 @@
+services:
+  app:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://agent:${PG_PASSWORD}@db:5432/agent
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    expose: ["8000"]
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_DB: agent
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    depends_on: [app]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+      DEMO_USER: ${DEMO_USER}
+      DEMO_PASSWORD_HASH: ${DEMO_PASSWORD_HASH}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  pgdata: {}
+  caddy_data: {}
+  caddy_config: {}

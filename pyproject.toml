@@ -8,10 +8,12 @@ dependencies = [
     "uvicorn>=0.30",
     "langgraph>=0.2",
     "langchain-openai>=0.2",
-    "mcp>=1.2",
+    "mcp>=2",
     "rank-bm25>=0.2.2",
     "jieba>=0.42",
     "python-dotenv>=1.0",
+    "langgraph-checkpoint-postgres>=3.2.0",
+    "psycopg[binary,pool]>=3.3.6",
 ]
 
 [dependency-groups]

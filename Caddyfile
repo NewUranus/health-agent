@@ -1,0 +1,7 @@
+# 自动申请并续期 HTTPS 证书；整个站点需要口令访问
+{$DOMAIN} {
+	basic_auth {
+		{$DEMO_USER} {$DEMO_PASSWORD_HASH}
+	}
+	reverse_proxy app:8000
+}
