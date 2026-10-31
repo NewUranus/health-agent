@@ -66,6 +66,8 @@ docker compose logs -f
 git pull && docker compose up -d --build
 ```
 
+前端构建结果已提交在 `web/`，服务器不需要安装 Node，也不要在内存小的服务器上构建前端。
+
 ## 6. 演示前检查清单
 
 - [ ] 用手机 4G 打开链接，输入口令，完整走一遍示例对话

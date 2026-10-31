@@ -20,7 +20,7 @@
 
 | 部分 | 技术 |
 |---|---|
-| 前端 | 原生 HTML + CSS + JavaScript，无框架、无构建步骤；用 `fetch` 读取 SSE 流式事件 |
+| 前端 | React + TypeScript + Vite，Vitest 测试；用 `fetch` 读取 SSE 流式事件 |
 | 后端 | Python 3.12、FastAPI、Uvicorn，SSE 流式接口 |
 | Agent 编排 | LangGraph（主图 + 子图、checkpointer、Store） |
 | 工具 | MCP Python SDK 2.x，stdio 子进程；Function Calling 循环 |
@@ -45,7 +45,8 @@
 | `app/` | FastAPI 接口、状态图、检索、校验、记忆 |
 | `mcp_server/` | MCP 工具服务（stdio） |
 | `corpus/` | 16 段指南摘要 |
-| `web/` | 前端，纯 HTML + JS，无构建步骤 |
+| `frontend/` | 前端源码（React + TypeScript） |
+| `web/` | 前端构建结果，由 FastAPI 托管 |
 | `eval/` | 评测脚本和 26 条用例 |
 | `docs/` | 设计文档、部署说明 |
 
@@ -75,6 +76,8 @@ uv run uvicorn app.main:app --port 8000
 
 然后打开 http://localhost:8000 。模型调用失败时会退回模板回复，并在轨迹里提示。
 
+改前端时在 `frontend/` 下运行 `npm run dev`；改完运行 `npm run build`，并把 `web/` 一起提交。
+
 用 Docker 部署（含 Postgres、HTTPS 和访问口令）见 [docs/DEPLOY.md](docs/DEPLOY.md)。
 
 ## 测试和评测
@@ -82,6 +85,7 @@ uv run uvicorn app.main:app --port 8000
 ```bash
 uv run pytest -q
 uv run python -m eval.run_eval --mock
+cd frontend && npm ci && npm test
 ```
 
 2026-10-30 用 `qwen3.6-plus` 跑了一次真实模型评测：26 条用例全部通过，每轮响应 p50 约 3.7 秒、p95 约 5.2 秒。
