@@ -5,3 +5,4 @@ __pycache__
 *.pyc
 .pytest_cache
 eval/results
+frontend/node_modules

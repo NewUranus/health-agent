@@ -5,3 +5,4 @@ __pycache__/
 .pytest_cache/
 eval/results/
 runs/
+node_modules/
