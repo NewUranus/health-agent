@@ -61,8 +61,7 @@ export function TracePanel({ turns, highlighted, selection }: {
     source?.focus({ preventScroll: true });
   }, [highlighted, selection]);
 
-  return <aside className="trace-panel" id="trace-panel" aria-label="Agent 轨迹">
-    <div className="panel-heading"><h2>Agent 轨迹 <span>{count}</span></h2><span className="live-label">实时</span></div>
+  return <>
     <p className="trace-intro">从信息收集到建议生成，查看每一步的依据。</p>
     <div className="traces" ref={traces}>
       {!turns.length && <div className="trace-empty"><span aria-hidden="true">⌘</span><h3>看见推理的过程</h3><p>发送一条消息后，这里将显示路由、工具结果和参考来源。</p></div>}
@@ -71,5 +70,5 @@ export function TracePanel({ turns, highlighted, selection }: {
         {nodes.map((event, index) => <TraceCard key={index} event={event} turn={turn} highlighted={highlighted} />)}
       </div>)}
     </div>
-  </aside>;
+  </>;
 }

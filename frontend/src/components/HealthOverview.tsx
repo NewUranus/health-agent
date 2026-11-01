@@ -1,12 +1,14 @@
 import type { FollowupStatus, NodeData, Risk } from "../types";
+import { formatPercent } from "../lib/format";
 import { fieldNames, profileLabels } from "../lib/labels";
 
-export function HealthOverview({ intake, risk, placeholder, status, followup }: {
+export function HealthOverview({ intake, risk, placeholder, status, followup, onSimulate }: {
   intake: NodeData | null;
   risk: Risk | null;
   placeholder: string;
   status: string;
   followup: FollowupStatus;
+  onSimulate: () => void;
 }) {
   const entries = Object.entries(intake?.profile ?? {});
   const riskLevel = risk ? ({ low: "低", intermediate: "中", high: "高" }[risk.level] ?? "") + "风险" : "还未评估";
@@ -29,7 +31,7 @@ export function HealthOverview({ intake, risk, placeholder, status, followup }: 
       </div>
       <div className={`risk-card ${risk?.level ?? ""}`}>
         <div className="risk-ring">
-          <strong>{risk ? `${(Math.round((risk.risk_percent + Number.EPSILON) * 10) / 10).toFixed(1)}%` : "—"}</strong>
+          <strong>{risk ? formatPercent(risk.risk_percent) : "—"}</strong>
           <span>10年风险</span>
         </div>
         <div>
@@ -37,6 +39,7 @@ export function HealthOverview({ intake, risk, placeholder, status, followup }: 
           <p>{risk ? "Framingham 模型估算 · 仅供演示" : "完善资料后查看风险分层"}</p>
           {followup.status === "upcoming" && <p>下次复查：{followup.due_date}</p>}
           <div className="risk-legend"><span>低</span><span>中</span><span>高</span></div>
+          {risk && <button type="button" className="risk-simulate" onClick={onSimulate}>调整指标，看风险变化 →</button>}
         </div>
       </div>
     </section>

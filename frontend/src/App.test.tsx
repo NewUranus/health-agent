@@ -56,6 +56,9 @@ function mockServer(chat: ChatHandler = () => streamResponse(sse(FULL_RUN)), hea
       if (url.startsWith("/api/followup")) {
         return new Response(JSON.stringify(followup), { headers: { "content-type": "application/json" } });
       }
+      if (url.startsWith("/api/tools/")) {
+        return new Response(JSON.stringify({ baseline: 13.45, simulated: 10.17, absolute_reduction: 3.28, relative_reduction_percent: 24.4, changes: [], note: "估算" }));
+      }
       const body = JSON.parse(String(init?.body));
       bodies.push(body);
       return chat(body);
@@ -398,6 +401,72 @@ describe("App", () => {
       await send();
       await finished();
       expect(screen.getByText(/发现急症信号，随访已中止/)).toBeInTheDocument();
+    });
+  });
+
+  describe("干预模拟标签页", () => {
+    const COMPLETE = {
+      profile: { sex: "male", age: 55, total_chol: 5.5, hdl: 1.3, sbp: 140, bp_treated: false, smoker: false, diabetes: false },
+      missing: [],
+    };
+    const run = [
+      node("intake", "orchestrator", COMPLETE),
+      node("retrieve", "intervention_agent", { chunks: [{ id: "salt_reduction", title: "减少钠盐摄入", source: "《指南》", score: 0.5 }] }),
+      node("risk_assess", "assessment_agent", { tool_calls: [{ tool: "cvd_risk", args: {}, result: cvd, via: "mcp" }] }),
+      { type: "message", content: "- 限盐 [cite:salt_reduction]" },
+      { type: "done" },
+    ];
+
+    it("切换标签，评估后能调滑块", async () => {
+      mockServer(() => streamResponse(sse(run)));
+      render(<App />);
+      await userEvent.click(screen.getByRole("tab", { name: "干预模拟" }));
+      expect(screen.getByText(/先完成一次风险评估/)).toBeInTheDocument();
+      await send();
+      await finished();
+      expect(screen.getByRole("slider", { name: "目标收缩压" })).toHaveAttribute("max", "140");
+      await userEvent.click(screen.getByRole("tab", { name: /Agent 轨迹/ }));
+      expect(screen.getByText("减少钠盐摄入")).toBeInTheDocument();
+    });
+
+    it("风险卡入口打开模拟", async () => {
+      mockServer(() => streamResponse(sse(run)));
+      render(<App />);
+      expect(screen.queryByRole("button", { name: /调整指标/ })).not.toBeInTheDocument();
+      await send();
+      await finished();
+      await userEvent.click(screen.getByRole("button", { name: /调整指标/ }));
+      expect(screen.getByRole("slider", { name: "目标收缩压" })).toBeInTheDocument();
+    });
+
+    it("轨迹收起时点风险卡入口也能打开", async () => {
+      mockServer(() => streamResponse(sse(run)));
+      render(<App />);
+      await send();
+      await finished();
+      await userEvent.click(screen.getByRole("button", { name: /收起轨迹/ }));
+      await userEvent.click(screen.getByRole("button", { name: /调整指标/ }));
+      expect(screen.getByRole("slider", { name: "目标收缩压" })).toBeInTheDocument();
+    });
+
+    it("在模拟页点引用会切回轨迹并高亮", async () => {
+      mockServer(() => streamResponse(sse(run)));
+      const { container } = render(<App />);
+      await send();
+      await finished();
+      await userEvent.click(screen.getByRole("tab", { name: "干预模拟" }));
+      await userEvent.click(screen.getByRole("button", { name: "查看引用来源 salt_reduction" }));
+      expect(container.querySelector(".source-card")).toHaveClass("highlight");
+    });
+
+    it("新会话后回到提示", async () => {
+      mockServer(() => streamResponse(sse(run)));
+      render(<App />);
+      await send();
+      await finished();
+      await userEvent.click(screen.getByRole("tab", { name: "干预模拟" }));
+      await userEvent.click(screen.getByRole("button", { name: /新会话/ }));
+      expect(screen.getByText(/先完成一次风险评估/)).toBeInTheDocument();
     });
   });
 });

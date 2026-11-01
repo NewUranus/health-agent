@@ -1,6 +1,7 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import { HealthOverview } from "./components/HealthOverview";
 import { MessageContent } from "./components/MessageContent";
+import { SimulationPanel } from "./components/SimulationPanel";
 import { TracePanel } from "./components/TracePanel";
 import { createSseParser } from "./lib/sse";
 import { createId, initialSession, saveUserId, sessionReducer } from "./lib/session";
@@ -17,11 +18,14 @@ export default function App() {
   const [mode, setMode] = useState("正在连接");
   const [input, setInput] = useState("");
   const [traceVisible, setTraceVisible] = useState(true);
+  const [panelTab, setPanelTab] = useState<"trace" | "simulate">("trace");
   const [highlighted, setHighlighted] = useState<string | null>(null);
   const [selection, setSelection] = useState(0);
   const messages = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const activeRequest = useRef<AbortController | null>(null);
+  const sidePanel = useRef<HTMLElement>(null);
+  const traceCount = session.traces.reduce((total, turn) => total + turn.nodes.length, 0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -123,8 +127,16 @@ export default function App() {
     setHighlighted(null);
   }
 
+  function openSimulation() {
+    setTraceVisible(true);
+    setPanelTab("simulate");
+    // 手机上面板在对话下方，滚过去才看得到
+    requestAnimationFrame(() => sidePanel.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
+  }
+
   function selectCitation(turn: number, id: string) {
     setTraceVisible(true);
+    setPanelTab("trace");
     setHighlighted(`${turn}:${id}`);
     setSelection((previous) => previous + 1);
   }
@@ -139,7 +151,7 @@ export default function App() {
       </div>
     </header>
     <main>
-      <HealthOverview intake={session.intake} risk={session.risk} placeholder={session.profilePlaceholder} status={session.profileStatus} followup={session.followup} />
+      <HealthOverview intake={session.intake} risk={session.risk} placeholder={session.profilePlaceholder} status={session.profileStatus} followup={session.followup} onSimulate={openSimulation} />
       {session.lastNode !== "checkin_question" && (session.followup.status === "due" || session.followup.status === "overdue") &&
         <div className="followup-reminder" role="alert">
           <span>{session.followup.status === "due" ? "已到复查时间" : `复查已逾期 ${-session.followup.days_until} 天`}</span>
@@ -183,7 +195,15 @@ export default function App() {
             <div className="composer-footer"><span role="status">{session.status}</span><span>Enter 发送 · Shift + Enter 换行</span></div>
           </div>
         </section>
-        {traceVisible && <TracePanel turns={session.traces} highlighted={highlighted} selection={selection} />}
+        {traceVisible && <aside className="trace-panel" id="trace-panel" aria-label="详情" ref={sidePanel}>
+          <div className="panel-tabs" role="tablist">
+            <button type="button" role="tab" aria-selected={panelTab === "trace"} onClick={() => setPanelTab("trace")}>Agent 轨迹<span>{traceCount}</span></button>
+            <button type="button" role="tab" aria-selected={panelTab === "simulate"} onClick={() => setPanelTab("simulate")}>干预模拟</button>
+          </div>
+          {panelTab === "trace"
+            ? <TracePanel turns={session.traces} highlighted={highlighted} selection={selection} />
+            : <SimulationPanel profile={session.intake?.profile} />}
+        </aside>}
       </div>
       <footer><span>仅为技术演示，不构成医疗建议。出现紧急不适，请立即拨打 <strong>120</strong>。</span><span>HealthPilot · 关心每一个小改变</span></footer>
     </main>
