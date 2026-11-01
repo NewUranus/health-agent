@@ -85,6 +85,14 @@ describe("App", () => {
     expect(await screen.findByText(/Mock 演示模式/)).toBeInTheDocument();
   });
 
+  it("没有资料时档案卡不显示状态文字", async () => {
+    mockServer();
+    const { container } = render(<App />);
+    expect(container.querySelector(".card-heading span")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /新会话/ }));
+    expect(container.querySelector(".card-heading span")).toBeNull();
+  });
+
   it("真实模式和服务不可用", async () => {
     mockServer(undefined, { ok: true, mock: false });
     const first = render(<App />);

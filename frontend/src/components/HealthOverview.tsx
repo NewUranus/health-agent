@@ -2,11 +2,10 @@ import type { FollowupStatus, NodeData, Risk } from "../types";
 import { formatPercent } from "../lib/format";
 import { fieldNames, profileLabels } from "../lib/labels";
 
-export function HealthOverview({ intake, risk, placeholder, status, followup, onSimulate }: {
+export function HealthOverview({ intake, risk, placeholder, followup, onSimulate }: {
   intake: NodeData | null;
   risk: Risk | null;
   placeholder: string;
-  status: string;
   followup: FollowupStatus;
   onSimulate: () => void;
 }) {
@@ -17,7 +16,7 @@ export function HealthOverview({ intake, risk, placeholder, status, followup, on
       <div className="profile-card">
         <div className="card-heading">
           <h2>我的健康档案</h2>
-          <span>{intake ? (intake.missing?.length ? `还需 ${intake.missing.length} 项信息` : "评估资料已齐全") : status}</span>
+          {intake && <span>{intake.missing?.length ? `还需 ${intake.missing.length} 项信息` : "评估资料已齐全"}</span>}
         </div>
         <div className="profile-fields">
           {entries.length ? entries.map(([key, value]) => (

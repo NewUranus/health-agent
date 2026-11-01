@@ -26,7 +26,6 @@ interface Session {
   messages: Message[];
   traces: TraceTurn[];
   intake: NodeData | null;
-  profileStatus: string;
   profilePlaceholder: string;
   risk: Risk | null;
   citations: Map<string, number>;
@@ -51,7 +50,6 @@ function freshSession(threadId: string, userId: string): Session {
     status: "你的每一步，都有依据可查",
     messages: [{ role: "assistant", text: welcomeText, turn: 0 }],
     traces: [], intake: null, risk: null, citations: new Map(), followup: { status: "none" }, lastNode: null,
-    profileStatus: "等待补充",
     profilePlaceholder: "在对话中告诉我年龄、血压和血脂，逐步完善你的档案。",
   };
 }
@@ -65,7 +63,6 @@ export function sessionReducer(state: Session, action: SessionAction): Session {
       return {
         ...freshSession(action.threadId, action.userId ?? state.userId),
         status: action.userId ? "已更换身份（服务端历史不会删除）" : "已开启新会话",
-        profileStatus: "等待对话",
         profilePlaceholder: action.userId
           ? "已切换为新身份，请重新提供健康信息。"
           : "新会话将在下一条消息时读取已有健康档案。",

@@ -80,7 +80,8 @@ def create_app():
 
     @application.get("/", include_in_schema=False)
     async def index():
-        return FileResponse(ROOT / "web" / "index.html")
+        # 首页每次都向服务器确认版本；assets 的文件名带哈希，可以放心缓存
+        return FileResponse(ROOT / "web" / "index.html", headers={"Cache-Control": "no-cache"})
 
     @application.get("/api/health")
     async def health():

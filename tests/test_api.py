@@ -20,6 +20,7 @@ def test_index_and_health(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "<html" in r.text.lower()
+    assert r.headers["cache-control"] == "no-cache"  # 更新后不能停在旧页面
     assert client.get("/api/health").json() == {"ok": True, "mock": True}
 
 

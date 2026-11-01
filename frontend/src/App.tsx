@@ -151,7 +151,7 @@ export default function App() {
       </div>
     </header>
     <main>
-      <HealthOverview intake={session.intake} risk={session.risk} placeholder={session.profilePlaceholder} status={session.profileStatus} followup={session.followup} onSimulate={openSimulation} />
+      <HealthOverview intake={session.intake} risk={session.risk} placeholder={session.profilePlaceholder} followup={session.followup} onSimulate={openSimulation} />
       {session.lastNode !== "checkin_question" && (session.followup.status === "due" || session.followup.status === "overdue") &&
         <div className="followup-reminder" role="alert">
           <span>{session.followup.status === "due" ? "已到复查时间" : `复查已逾期 ${-session.followup.days_until} 天`}</span>
