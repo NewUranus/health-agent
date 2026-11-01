@@ -9,6 +9,21 @@ export type FollowupStatus =
   | { status: "none"; last_risk_percent?: number }
   | { status: "upcoming" | "due" | "overdue"; due_date: string; days_until: number; level: string; last_risk_percent?: number };
 
+export interface HistoryRecord {
+  at: string;
+  kind?: string;
+  risk_percent: number;
+  level: string;
+  sbp?: number | null;
+  dbp?: number | null;
+  total_chol?: number | null;
+  hdl?: number | null;
+  smoker?: boolean | null;
+  adherence?: string;
+  symptoms?: boolean;
+  bp_updated?: boolean;
+}
+
 export interface Source {
   id: string;
   title: string;

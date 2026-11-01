@@ -316,3 +316,29 @@ def test_questionnaire_is_per_thread(client):
     assert node_data(other, "supervisor")["route"] == "qa_agent"
     resumed = post(client, thread, user, "都挺好")
     assert question(resumed)["key"] == "symptoms"
+
+
+# ---------- 历史记录接口 ----------
+
+
+def test_history_returns_records_in_order(client):
+    user = uid()
+    assert client.get("/api/history", params={"user_id": user}).json() == {"records": []}
+    post(client, uid(), user, FULL)
+    thread = uid()
+    post(client, thread, user, "我来复查，最近血压130/85")
+    post(client, thread, user, "都挺好")
+    post(client, thread, user, "有点头晕")
+    records = client.get("/api/history", params={"user_id": user}).json()["records"]
+    assert [r["kind"] for r in records] == ["assessment", "checkin"]
+    assert records[0]["risk_percent"] == pytest.approx(13.45, abs=0.01)
+    assert records[1]["risk_percent"] == pytest.approx(11.77, abs=0.01)
+    assert records[1]["sbp"] == 130 and records[1]["dbp"] == 85
+    assert records[1]["adherence"] == "good" and records[1]["symptoms"] is True
+    assert records[0]["at"]
+
+
+def test_history_is_per_user(client):
+    user = uid()
+    post(client, uid(), user, FULL)
+    assert client.get("/api/history", params={"user_id": uid()}).json() == {"records": []}

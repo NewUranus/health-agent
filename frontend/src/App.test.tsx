@@ -43,6 +43,7 @@ function streamResponse(text: string) {
 type ChatHandler = (body: Record<string, string>) => Response | Promise<Response>;
 
 let followup: object = { status: "none" };
+let history: object[] = [];
 
 function mockServer(chat: ChatHandler = () => streamResponse(sse(FULL_RUN)), health: object | null = { ok: true, mock: true }) {
   const bodies: Record<string, string>[] = [];
@@ -55,6 +56,9 @@ function mockServer(chat: ChatHandler = () => streamResponse(sse(FULL_RUN)), hea
       }
       if (url.startsWith("/api/followup")) {
         return new Response(JSON.stringify(followup), { headers: { "content-type": "application/json" } });
+      }
+      if (url.startsWith("/api/history")) {
+        return new Response(JSON.stringify({ records: history }));
       }
       if (url.startsWith("/api/tools/")) {
         return new Response(JSON.stringify({ baseline: 13.45, simulated: 10.17, absolute_reduction: 3.28, relative_reduction_percent: 24.4, changes: [], note: "估算" }));
@@ -73,6 +77,7 @@ const finished = () => waitFor(() => expect(screen.getByRole("button", { name: /
 
 beforeEach(() => {
   followup = { status: "none" };
+  history = [];
   localStorage.clear();
   vi.unstubAllGlobals();
 });
@@ -475,6 +480,54 @@ describe("App", () => {
       await userEvent.click(screen.getByRole("tab", { name: "干预模拟" }));
       await userEvent.click(screen.getByRole("button", { name: /新会话/ }));
       expect(screen.getByText(/先完成一次风险评估/)).toBeInTheDocument();
+    });
+  });
+
+  describe("随访记录标签页", () => {
+    const record = { at: "2026-10-30T02:00:00+00:00", kind: "assessment", risk_percent: 24.27, level: "high", sbp: 140, dbp: 90 };
+
+    it("打开时带 user_id 请求，每轮结束后刷新", async () => {
+      history = [record];
+      mockServer();
+      render(<App />);
+      await userEvent.click(screen.getByRole("tab", { name: "随访记录" }));
+      expect(await screen.findByText("首次评估")).toBeInTheDocument();
+      const calls = () => vi.mocked(fetch).mock.calls.map((c) => String(c[0])).filter((u) => u.startsWith("/api/history"));
+      expect(calls()[0]).toContain(encodeURIComponent(localStorage.getItem("healthpilot-user")!));
+      history = [record, { ...record, at: "2026-10-31T02:00:00+00:00", kind: "checkin", risk_percent: 11.77, level: "intermediate" }];
+      await send();
+      await finished();
+      expect(await screen.findByText("复查")).toBeInTheDocument();
+    });
+
+    it("显示下次复查日期", async () => {
+      history = [record];
+      followup = { status: "upcoming", due_date: "2027-01-30", days_until: 90, level: "high" };
+      mockServer();
+      render(<App />);
+      await userEvent.click(screen.getByRole("tab", { name: "随访记录" }));
+      expect(await screen.findByText(/下次复查 2027-01-30/)).toBeInTheDocument();
+    });
+
+    it("清除身份后回到空状态", async () => {
+      history = [record];
+      mockServer();
+      render(<App />);
+      await userEvent.click(screen.getByRole("tab", { name: "随访记录" }));
+      await screen.findByText("首次评估");
+      history = [];
+      await userEvent.click(screen.getByRole("button", { name: /清除身份/ }));
+      expect(await screen.findByText(/还没有记录/)).toBeInTheDocument();
+    });
+
+    it("随访中途不把标签切走", async () => {
+      history = [record];
+      mockServer(() => streamResponse(sse([{ type: "message", content: "好" }, { type: "done" }])));
+      render(<App />);
+      await userEvent.click(screen.getByRole("tab", { name: "随访记录" }));
+      await send();
+      await finished();
+      expect(screen.getByRole("tab", { name: "随访记录" })).toHaveAttribute("aria-selected", "true");
     });
   });
 });

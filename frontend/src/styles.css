@@ -1036,3 +1036,154 @@ html {
   color: var(--green);
   cursor: pointer;
 }
+
+.history {
+  padding: 14px 19px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.history-next {
+  font-size: 12px;
+  font-weight: 600;
+  color: #243c38;
+  margin: 0;
+}
+
+.trend {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.trend svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.trend-axis,.trend-threshold {
+  stroke: #e7ece9;
+  stroke-width: 1;
+}
+
+.trend-tick {
+  font-size: 10px;
+  fill: var(--muted);
+}
+
+.trend-crosshair {
+  stroke: #b9c6c0;
+  stroke-width: 1;
+}
+
+.trend-line {
+  fill: none;
+  stroke: #0b8a76;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.trend-point {
+  fill: #0b8a76;
+  stroke: #fcfdfc;
+  stroke-width: 2;
+}
+
+.trend-end-label {
+  font-size: 11px;
+  font-weight: 600;
+  fill: #243c38;
+}
+
+.trend-hit {
+  fill: transparent;
+  outline: none;
+  cursor: default;
+}
+
+.trend-tooltip {
+  position: absolute;
+  /* 面板会裁切溢出，靠边的点把提示框往里收 */
+  transform: translate(var(--tip-x, -50%), calc(-100% - 12px));
+  background: #243c38;
+  color: #fff;
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.trend-tooltip span {
+  opacity: .75;
+  font-size: 10px;
+}
+
+.trend-caption {
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--muted);
+  margin: 6px 0 0;
+}
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.history-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 11px;
+}
+
+.history-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.history-kind {
+  color: #243c38;
+  font-weight: 600;
+}
+
+.history-risk {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 3px;
+}
+
+.history-risk b {
+  font-size: 16px;
+  color: #243c38;
+}
+
+.history-risk span {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.history-item p {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}

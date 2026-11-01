@@ -94,6 +94,11 @@ def create_app():
                 yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
         return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
+    @application.get("/api/history")
+    async def history(user_id: str):
+        _, records = await load_memory(application.state.agent.store, user_id)
+        return {"records": records}
+
     @application.get("/api/followup")
     async def followup(user_id: str):
         store = application.state.agent.store

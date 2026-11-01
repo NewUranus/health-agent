@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import { HealthOverview } from "./components/HealthOverview";
+import { HistoryPanel } from "./components/HistoryPanel";
 import { MessageContent } from "./components/MessageContent";
 import { SimulationPanel } from "./components/SimulationPanel";
 import { TracePanel } from "./components/TracePanel";
@@ -18,7 +19,7 @@ export default function App() {
   const [mode, setMode] = useState("正在连接");
   const [input, setInput] = useState("");
   const [traceVisible, setTraceVisible] = useState(true);
-  const [panelTab, setPanelTab] = useState<"trace" | "simulate">("trace");
+  const [panelTab, setPanelTab] = useState<"trace" | "simulate" | "history">("trace");
   const [highlighted, setHighlighted] = useState<string | null>(null);
   const [selection, setSelection] = useState(0);
   const messages = useRef<HTMLDivElement>(null);
@@ -199,10 +200,12 @@ export default function App() {
           <div className="panel-tabs" role="tablist">
             <button type="button" role="tab" aria-selected={panelTab === "trace"} onClick={() => setPanelTab("trace")}>Agent 轨迹<span>{traceCount}</span></button>
             <button type="button" role="tab" aria-selected={panelTab === "simulate"} onClick={() => setPanelTab("simulate")}>干预模拟</button>
+            <button type="button" role="tab" aria-selected={panelTab === "history"} onClick={() => setPanelTab("history")}>随访记录</button>
           </div>
-          {panelTab === "trace"
-            ? <TracePanel turns={session.traces} highlighted={highlighted} selection={selection} />
-            : <SimulationPanel profile={session.intake?.profile} />}
+          {panelTab === "trace" && <TracePanel turns={session.traces} highlighted={highlighted} selection={selection} />}
+          {panelTab === "simulate" && <SimulationPanel profile={session.intake?.profile} />}
+          {panelTab === "history" && <HistoryPanel userId={session.userId} followup={session.followup}
+            refreshKey={`${session.threadId}:${session.turn}:${session.busy}`} />}
         </aside>}
       </div>
       <footer><span>仅为技术演示，不构成医疗建议。出现紧急不适，请立即拨打 <strong>120</strong>。</span><span>HealthPilot · 关心每一个小改变</span></footer>
