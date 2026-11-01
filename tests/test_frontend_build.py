@@ -15,6 +15,13 @@ def test_built_assets_exist_and_are_served(client):
         assert client.get(asset).status_code == 200, asset
 
 
+def test_favicon_is_linked_and_served(client):
+    html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    for path in ("/static/favicon.svg", "/static/favicon.png"):
+        assert f'href="{path}"' in html
+        assert client.get(path).status_code == 200, path
+
+
 def test_old_hand_written_files_are_gone():
     assert not (ROOT / "web" / "app.js").exists()
     assert not (ROOT / "web" / "style.css").exists()
