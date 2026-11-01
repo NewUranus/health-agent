@@ -1,6 +1,6 @@
 import { useEffect, useRef, type CSSProperties } from "react";
 import type { NodeEvent, TraceTurn } from "../types";
-import { agents, fieldNames, nodeLabels } from "../lib/labels";
+import { adherenceLabels, agents, fieldNames, nodeLabels } from "../lib/labels";
 
 function TraceCard({ event, turn, highlighted }: { event: NodeEvent; turn: number; highlighted: string | null }) {
   const data = event.data ?? {};
@@ -32,7 +32,14 @@ function TraceCard({ event, turn, highlighted }: { event: NodeEvent; turn: numbe
         className={`source-card${highlighted === `${turn}:${chunk.id}` ? " highlight" : ""}`}>
         <b>{chunk.title}</b><p>{chunk.source}</p><p>相关度 {Number(chunk.score).toFixed(3)}</p>
       </div>)}
-      {event.node === "checkin" && <p>风险变化：{(data.delta ?? 0) > 0 ? "+" : ""}{data.delta} 个百分点</p>}
+      {event.node === "checkin_question" && <p>第 {data.step}/{data.total} 题</p>}
+      {event.node === "checkin" && <>
+        {!!data.red_flags?.length && <p className="warning">发现急症信号，随访已中止。</p>}
+        {data.cancelled && <p>已取消本次随访，记录没有变化。</p>}
+        {typeof data.delta === "number" && <p>风险变化：{data.delta > 0 ? "+" : ""}{data.delta} 个百分点</p>}
+        {data.adherence && <p>依从情况：{adherenceLabels[data.adherence] ?? "未明确"}</p>}
+      </>}
+      {data.due_date && <p>下次复查日期：{data.due_date}</p>}
     </article>
   );
 }

@@ -10,6 +10,9 @@ from typing import Annotated, TypedDict
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
+from langgraph.types import interrupt
+from app import clock
+from app.followup import classify_adherence, make_plan, parse_smoking, reports_symptoms
 from app.function_calling import mcp_tools_to_openai, run_tool_loop
 from app.intake import FIELD_LABELS, missing_fields, parse_profile
 from app.llm import template_advice
@@ -23,7 +26,8 @@ logger = logging.getLogger(__name__)
 DISCLAIMER = "> 仅为技术演示，不构成医疗建议。"
 OWNERS = {"safety_check": "orchestrator", "emergency": "orchestrator", "intake": "orchestrator", "supervisor": "orchestrator",
           "ask_missing": "intake_agent", "risk_assess": "assessment_agent", "retrieve": "intervention_agent", "advise": "intervention_agent",
-          "verify": "intervention_agent", "followup": "followup_agent", "simulate": "simulation_agent", "checkin": "checkin_agent", "answer": "qa_agent"}
+          "verify": "intervention_agent", "followup": "followup_agent", "simulate": "simulation_agent", "checkin": "checkin_agent",
+          "checkin_question": "checkin_agent", "answer": "qa_agent"}
 
 
 class AgentState(TypedDict, total=False):
@@ -212,7 +216,8 @@ class Nodes:
         assessment = state["assessment"]
         risk = assessment["cvd_risk"]
         followup = {"high": "建议1个月内就诊复查，由医生评估干预方案。", "intermediate": "建议3个月复查血压血脂。", "low": "建议12个月常规体检，并保持健康生活方式。"}[risk["level"]]
-        await save_assessment(self.store, state["user_id"], state["profile"], risk)
+        plan = make_plan(risk["level"], clock.today())
+        await save_assessment(self.store, state["user_id"], state["profile"], risk, plan)
         level = {"low": "低", "intermediate": "中", "high": "高"}[risk["level"]]
         lines = ["## 评估结果", f"10年心血管病风险：{display_number(risk['risk_percent'])}%（{level}风险）", f"血压分级：{assessment['bp_category']['category']}"]
         if "bmi" in assessment:
@@ -220,8 +225,8 @@ class Nodes:
         points = [point for point in assessment["project_trajectory"]["points"] if point["years"] in (5, 10)]
         if points:
             lines += ["## 风险轨迹", *[f"{p['years']}年后（{p['age']}岁）：{display_number(p['risk_percent'])}%" for p in points], assessment["project_trajectory"]["note"]]
-        lines += ["## 干预建议", state["advice"], "## 随访计划", followup, risk["note"], DISCLAIMER]
-        return result({"followup": followup}, followup=followup, stage="assessed", reply="\n".join(lines))
+        lines += ["## 干预建议", state["advice"], "## 随访计划", followup, f"下次复查日期：{plan['due_date']}", risk["note"], DISCLAIMER]
+        return result({"followup": followup, "due_date": plan["due_date"]}, followup=followup, stage="assessed", reply="\n".join(lines))
 
     async def simulate(self, state):
         text = state["text"]
@@ -242,17 +247,66 @@ class Nodes:
         return result({"tool_calls": [trace]}, reply=reply)
 
     async def checkin(self, state):
-        trace = await self.mcp.call_with_trace("cvd_risk", risk_args(state["profile"]))
+        # 恢复时节点会从头执行，只修改局部副本，全部问完后才调用工具和写入记忆。
+        profile = dict(state["profile"])
+        bp_updated = "sbp" in state.get("parsed", {})
+        questions = []
+        if not bp_updated:
+            questions.append(("bp", "请告诉我最近一次测量的血压，例如 130/85。"))
+        questions.append(("adherence", "最近有按时服用降压药吗？" if profile["bp_treated"] else "最近在限盐、运动这些方面做得怎么样？"))
+        if profile["smoker"]:
+            questions.append(("smoking", "目前还在吸烟吗？"))
+        questions.append(("symptoms", "最近有没有头晕、胸闷、气短这些不适？"))
+        adherence, symptoms = "unknown", False
+        for step, (key, question) in enumerate(questions, 1):
+            for attempt in range(2 if key == "bp" else 1):
+                answer = interrupt({"key": key, "question": ("没有识别出血压。" if attempt else "") + question,
+                                    "step": step, "total": len(questions)})
+                flags = check_red_flags(answer)
+                if flags:
+                    emergency = await self.emergency({"red_flags": flags})
+                    return result({"red_flags": flags}, reply=emergency["reply"])
+                if "取消" in answer:
+                    return result({"cancelled": True}, reply="已取消本次随访，记录没有变化。")
+                if key == "bp":
+                    parsed = parse_profile(answer)
+                    if "sbp" not in parsed:
+                        continue
+                    profile.update({field: parsed[field] for field in ("sbp", "dbp") if field in parsed})
+                    bp_updated = True
+                elif key == "adherence":
+                    adherence = classify_adherence(answer)
+                elif key == "smoking":
+                    profile["smoker"] = parse_smoking(answer)
+                else:
+                    symptoms = reports_symptoms(answer)
+                break
+
+        trace = await self.mcp.call_with_trace("cvd_risk", risk_args(profile))
         risk = trace["result"]
         previous = state["history"][-1]["risk_percent"]
         current = risk["risk_percent"]
         delta = round(current - previous, 2)
-        await save_assessment(self.store, state["user_id"], state["profile"], risk)
+        plan = make_plan(risk["level"], clock.today(), symptoms)
+        await save_assessment(self.store, state["user_id"], profile, risk, plan, kind="checkin",
+                              adherence=adherence, symptoms=symptoms, bp_updated=bp_updated)
         encouragement = "风险有所下降，请继续保持健康习惯。" if delta < 0 else "风险基本不变，请继续监测、坚持健康习惯。" if delta == 0 else "风险有所上升，建议及时就医，和医生讨论复查与干预方案。"
         if risk["level"] == "high":
             encouragement += "目前仍属高风险，建议1个月内就诊，由医生评估干预方案。"
-        reply = f"## 随访对比\n上次风险：{display_number(previous)}%\n本次风险：{display_number(current)}%\n{encouragement}\n{risk['note']}\n\n{DISCLAIMER}"
-        return result({"previous_risk": previous, "current_risk": current, "delta": delta, "tool_calls": [trace]}, reply=reply, stage="assessed")
+        trend = " → ".join(f"{display_number(value)}%" for value in [*[record["risk_percent"] for record in state["history"]], current])
+        adherence_label = {"poor": "需要改进", "good": "良好", "unknown": "未明确"}[adherence]
+        lines = ["## 随访对比", f"上次风险：{display_number(previous)}%", f"本次风险：{display_number(current)}%",
+                 f"历次风险：{trend}", f"依从情况：{adherence_label}", f"不适症状：{'有' if symptoms else '无'}", encouragement]
+        if symptoms:
+            lines.append("你提到了不适症状，建议尽快就诊，不要等到下次复查。")
+        if profile["bp_treated"] and adherence == "poor":
+            lines.append("请不要自行停药或减药，按医嘱服药；有困难请咨询医生。")
+        if not bp_updated:
+            lines.append("血压没有更新，以上按上次的数值计算。")
+        lines += [f"下次复查日期：{plan['due_date']}", risk["note"], "", DISCLAIMER]
+        return result({"previous_risk": previous, "current_risk": current, "delta": delta, "tool_calls": [trace],
+                       "adherence": adherence, "symptoms": symptoms, "bp_updated": bp_updated, "due_date": plan["due_date"], "profile": profile},
+                      reply="\n".join(lines), stage="assessed", profile=profile)
 
     async def answer(self, state):
         chunks = [asdict(c) for c in await asyncio.to_thread(self.retriever.search, state["text"], 4)]

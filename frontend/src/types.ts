@@ -5,6 +5,10 @@ export interface Risk {
   level: string;
 }
 
+export type FollowupStatus =
+  | { status: "none"; last_risk_percent?: number }
+  | { status: "upcoming" | "due" | "overdue"; due_date: string; days_until: number; level: string; last_risk_percent?: number };
+
 export interface Source {
   id: string;
   title: string;
@@ -37,6 +41,12 @@ export interface NodeData extends Record<string, unknown> {
   tool_calls?: ToolCall[];
   chunks?: Source[];
   delta?: number;
+  key?: string;
+  step?: number;
+  total?: number;
+  adherence?: string;
+  due_date?: string;
+  cancelled?: boolean;
 }
 
 export interface NodeEvent {

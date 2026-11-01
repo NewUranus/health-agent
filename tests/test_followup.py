@@ -214,6 +214,7 @@ def test_smoker_is_asked_and_profile_updates(client):
     assert question(third)["key"] == "symptoms"
     done = post(client, thread, user, "没有")
     assert node_data(done, "checkin")["current_risk"] == pytest.approx(11.77, abs=0.01)
+    assert node_data(done, "checkin")["profile"]["smoker"] is False  # 前端靠它刷新档案卡
     later = post(client, uid(), user, "我来复查，最近血压130/85")
     assert question(later)["total"] == 2  # 档案已更新，不再问吸烟
 

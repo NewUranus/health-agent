@@ -8,8 +8,10 @@ export const nodeLabels: Record<string, string> = {
   safety_check: "急症筛查", emergency: "紧急就医指引", intake: "整理健康档案",
   supervisor: "规划下一步", ask_missing: "补充问诊", risk_assess: "计算健康风险",
   retrieve: "检索指南依据", advise: "生成干预建议", verify: "校验建议与引用",
-  followup: "制定随访计划", simulate: "模拟干预效果", checkin: "对比复查结果", answer: "回答健康问题",
+  followup: "制定随访计划", simulate: "模拟干预效果", checkin: "对比复查结果", checkin_question: "随访问诊", answer: "回答健康问题",
 };
+
+export const adherenceLabels: Record<string, string> = { poor: "需要改进", good: "良好", unknown: "未明确" };
 
 export const agents: Record<string, [string, string]> = {
   orchestrator: ["协调 Agent", "#82988b"], intake_agent: ["问诊 Agent", "#82a1ac"],

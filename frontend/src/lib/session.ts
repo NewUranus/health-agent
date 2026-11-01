@@ -1,4 +1,4 @@
-import type { Message, NodeData, Risk, ServerEvent, TraceTurn } from "../types";
+import type { FollowupStatus, Message, NodeData, Risk, ServerEvent, TraceTurn } from "../types";
 import { progressLabel } from "./progress";
 
 export const welcomeText = "你好，我是 HealthPilot。\n我们可以一起了解你的心血管健康，从年龄、性别和最近的血压开始。资料齐全后，我会提供风险评估、有来源的建议和随访计划。\n也可以点击下方示例，体验完整流程。";
@@ -30,12 +30,15 @@ interface Session {
   profilePlaceholder: string;
   risk: Risk | null;
   citations: Map<string, number>;
+  followup: FollowupStatus;
+  lastNode: string | null;
 }
 
 export type SessionAction =
   | { type: "send"; text: string }
   | { type: "event"; event: ServerEvent }
   | { type: "finish"; status: string }
+  | { type: "followup"; value: FollowupStatus; threadId: string; userId: string }
   | { type: "reset"; threadId: string; userId?: string };
 
 export function initialSession(): Session {
@@ -47,7 +50,7 @@ function freshSession(threadId: string, userId: string): Session {
     threadId, userId, turn: 0, busy: false,
     status: "你的每一步，都有依据可查",
     messages: [{ role: "assistant", text: welcomeText, turn: 0 }],
-    traces: [], intake: null, risk: null, citations: new Map(),
+    traces: [], intake: null, risk: null, citations: new Map(), followup: { status: "none" }, lastNode: null,
     profileStatus: "等待补充",
     profilePlaceholder: "在对话中告诉我年龄、血压和血脂，逐步完善你的档案。",
   };
@@ -55,6 +58,9 @@ function freshSession(threadId: string, userId: string): Session {
 
 export function sessionReducer(state: Session, action: SessionAction): Session {
   switch (action.type) {
+    case "followup":
+      return action.threadId === state.threadId && action.userId === state.userId
+        ? { ...state, followup: action.value } : state;
     case "reset":
       return {
         ...freshSession(action.threadId, action.userId ?? state.userId),
@@ -73,7 +79,8 @@ export function sessionReducer(state: Session, action: SessionAction): Session {
       };
     }
     case "finish":
-      return { ...state, busy: false, status: action.status };
+      return { ...state, busy: false, status: state.lastNode === "checkin_question"
+        ? '请回答上面的随访问题（回复"取消"可退出）' : action.status };
     case "event": {
       const event = action.event;
       if (event.type === "done") return state;
@@ -100,8 +107,11 @@ export function sessionReducer(state: Session, action: SessionAction): Session {
         }
       }
       return {
-        ...state, risk, status: progressLabel(event.node, data),
-        intake: event.node === "intake" ? data : state.intake,
+        ...state, risk, lastNode: event.node, status: event.node === "checkin_question"
+          ? '请回答上面的随访问题（回复"取消"可退出）' : progressLabel(event.node, data),
+        // 恢复执行不经过 intake，问诊里改过的档案（如戒烟）随 checkin 事件带回来
+        intake: event.node === "intake" ? data
+          : event.node === "checkin" && data.profile ? { ...state.intake, profile: data.profile, missing: [] } : state.intake,
         traces: state.traces.map((trace) => trace.turn === state.turn
           ? { ...trace, nodes: [...trace.nodes, event] } : trace),
       };

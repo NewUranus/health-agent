@@ -39,6 +39,21 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (session.busy) return;
+    const controller = new AbortController();
+    fetch(`/api/followup?user_id=${encodeURIComponent(session.userId)}`, { signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error();
+        return response.json();
+      })
+      .then((value) => {
+        if (!controller.signal.aborted) dispatch({ type: "followup", value, threadId: session.threadId, userId: session.userId });
+      })
+      .catch(() => { /* 提醒请求失败不影响对话。 */ });
+    return () => controller.abort();
+  }, [session.userId, session.threadId, session.busy, session.turn]);
+
+  useEffect(() => {
     if (messages.current) messages.current.scrollTop = messages.current.scrollHeight;
   }, [session.messages]);
 
@@ -124,7 +139,12 @@ export default function App() {
       </div>
     </header>
     <main>
-      <HealthOverview intake={session.intake} risk={session.risk} placeholder={session.profilePlaceholder} status={session.profileStatus} />
+      <HealthOverview intake={session.intake} risk={session.risk} placeholder={session.profilePlaceholder} status={session.profileStatus} followup={session.followup} />
+      {session.lastNode !== "checkin_question" && (session.followup.status === "due" || session.followup.status === "overdue") &&
+        <div className="followup-reminder" role="alert">
+          <span>{session.followup.status === "due" ? "已到复查时间" : `复查已逾期 ${-session.followup.days_until} 天`}</span>
+          <button type="button" disabled={session.busy} onClick={() => void send("我来复查")}>开始复查</button>
+        </div>}
       <div className={`workspace${traceVisible ? "" : " trace-hidden"}`}>
         <section className="chat-panel" aria-label="健康对话">
           <div className="panel-heading"><h2><span className="status-dot" /> 健康对话</h2>

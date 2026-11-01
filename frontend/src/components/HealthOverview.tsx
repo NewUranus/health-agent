@@ -1,11 +1,12 @@
-import type { NodeData, Risk } from "../types";
+import type { FollowupStatus, NodeData, Risk } from "../types";
 import { fieldNames, profileLabels } from "../lib/labels";
 
-export function HealthOverview({ intake, risk, placeholder, status }: {
+export function HealthOverview({ intake, risk, placeholder, status, followup }: {
   intake: NodeData | null;
   risk: Risk | null;
   placeholder: string;
   status: string;
+  followup: FollowupStatus;
 }) {
   const entries = Object.entries(intake?.profile ?? {});
   const riskLevel = risk ? ({ low: "低", intermediate: "中", high: "高" }[risk.level] ?? "") + "风险" : "还未评估";
@@ -34,6 +35,7 @@ export function HealthOverview({ intake, risk, placeholder, status }: {
         <div>
           <h2>{riskLevel}</h2>
           <p>{risk ? "Framingham 模型估算 · 仅供演示" : "完善资料后查看风险分层"}</p>
+          {followup.status === "upcoming" && <p>下次复查：{followup.due_date}</p>}
           <div className="risk-legend"><span>低</span><span>中</span><span>高</span></div>
         </div>
       </div>

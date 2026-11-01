@@ -270,6 +270,31 @@ main {
   min-height: 0;
 }
 
+.followup-reminder {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+  margin-bottom: 12px;
+  padding: 8px 14px;
+  border: 1px solid #e4d1a4;
+  border-radius: 10px;
+  background: #fff8e8;
+  color: #805e28;
+  font-size: 12px;
+}
+
+.followup-reminder button {
+  flex-shrink: 0;
+  border: 1px solid #d7c18f;
+  border-radius: 6px;
+  background: #fff;
+  color: #805e28;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
 .workspace.trace-hidden {
   grid-template-columns: 1fr;
 }

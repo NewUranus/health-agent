@@ -28,9 +28,16 @@ async def load_memory(store, user_id):
     return (profile.value if profile else {}), (history.value.get("records", []) if history else [])
 
 
-async def save_assessment(store, user_id, profile, risk):
+async def load_followup(store, user_id):
+    plan = await store.aget(("users", user_id), "followup")
+    return plan.value if plan else None
+
+
+async def save_assessment(store, user_id, profile, risk, plan, *, kind="assessment", **details):
     _, records = await load_memory(store, user_id)
-    record = {"at": datetime.now(timezone.utc).isoformat(), "risk_percent": risk["risk_percent"], "level": risk["level"],
+    record = {"at": datetime.now(timezone.utc).isoformat(), "kind": kind, **details,
+              "risk_percent": risk["risk_percent"], "level": risk["level"],
               **{key: profile.get(key) for key in ("sbp", "dbp", "total_chol", "hdl", "smoker")}}
     await store.aput(("users", user_id), "profile", dict(profile))
     await store.aput(("users", user_id), "history", {"records": [*records, record]})
+    await store.aput(("users", user_id), "followup", plan)

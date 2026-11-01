@@ -12,6 +12,9 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from app.agent import HealthAgent
+from app import clock
+from app.followup import plan_status
+from app.memory import load_followup, load_memory
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -89,6 +92,15 @@ def create_app():
             async for event in application.state.agent.stream(body.thread_id, body.message, body.user_id):
                 yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
         return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @application.get("/api/followup")
+    async def followup(user_id: str):
+        store = application.state.agent.store
+        status = plan_status(await load_followup(store, user_id), clock.today())
+        _, history = await load_memory(store, user_id)
+        if history:
+            status["last_risk_percent"] = history[-1]["risk_percent"]
+        return status
 
     async def forward(name, body):
         try:

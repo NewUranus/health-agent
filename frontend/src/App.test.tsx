@@ -369,6 +369,21 @@ describe("App", () => {
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     });
 
+    it("问诊结束后用返回的档案刷新档案卡", async () => {
+      const runs = [
+        sse([node("intake", "orchestrator", { profile: { age: 55, smoker: true }, missing: [] }), { type: "message", content: "好" }, { type: "done" }]),
+        sse([node("checkin", "checkin_agent", { profile: { age: 55, smoker: false }, delta: -1 }), { type: "message", content: "好" }, { type: "done" }]),
+      ];
+      mockServer(() => streamResponse(runs.shift()!));
+      const { container } = render(<App />);
+      await send();
+      await finished();
+      expect(container.querySelector(".profile-card")).toHaveTextContent(/吸烟\s*是/);
+      await send();
+      await finished();
+      expect(container.querySelector(".profile-card")).toHaveTextContent(/吸烟\s*否/);
+    });
+
     it("问诊中出现急症时显示中止提示", async () => {
       mockServer(() =>
         streamResponse(

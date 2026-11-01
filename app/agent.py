@@ -11,6 +11,7 @@ from weakref import WeakValueDictionary
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
+from langgraph.types import Command
 from app.graph import OWNERS, build_graph
 from app.llm import make_embedder, make_llm
 from app.mcp_client import MCPClient
@@ -18,6 +19,14 @@ from app.memory import memory_backend
 from app.rag import Retriever
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def has_interrupt(snapshot):
+    """同时检查主图与嵌套子图的暂停任务。"""
+    return bool(getattr(snapshot, "interrupts", ())) or any(
+        task.interrupts or has_interrupt(task.state)
+        for task in getattr(snapshot, "tasks", ())
+    )
 
 
 class HealthAgent:
@@ -78,9 +87,20 @@ class HealthAgent:
                 file.write(json.dumps(event, ensure_ascii=False) + "\n")
             return event
         try:
-            async for namespace, updates in self.graph.astream({"text": message, "user_id": user_id, "messages": [HumanMessage(message)], "reply": ""}, config,
+            snapshot = await self.graph.aget_state(config, subgraphs=True)
+            graph_input = Command(resume=message) if has_interrupt(snapshot) else {
+                "text": message, "user_id": user_id, "messages": [HumanMessage(message)], "reply": ""}
+            question_seen = False
+            async for namespace, updates in self.graph.astream(graph_input, config,
                                                                stream_mode="updates", subgraphs=True):
                 for name, update in updates.items():
+                    if name == "__interrupt__" and update and not question_seen:
+                        question = update[0].value
+                        question_seen = True
+                        reply = question["question"]
+                        yield record({"type": "node", "node": "checkin_question", "agent": OWNERS["checkin_question"], "ms": 0,
+                                      "data": {key: question[key] for key in ("key", "step", "total")}})
+                        continue
                     if name not in OWNERS or not isinstance(update, dict):
                         continue
                     now = time.perf_counter()
