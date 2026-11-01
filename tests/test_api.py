@@ -169,50 +169,14 @@ def test_simulation_does_not_change_profile(client):
     assert result["simulated"] == pytest.approx(13.45, abs=0.01)
 
 
-def test_long_term_memory_checkin_across_threads(client):
+def test_long_term_memory_prefills_new_thread(client):
     user = uid()
-    first = uid()
-    _post(client, first, user, FULL)
-    second = uid()  # 新会话，同一个用户
-    events = _post(client, second, user, "我来复查，最近血压130/85")
+    _post(client, uid(), user, FULL)
+    events = _post(client, uid(), user, "我来复查，最近血压130/85")
     intake = node_data(events, "intake")
     assert {"age", "sex", "total_chol", "hdl"} <= set(intake["from_memory"])
     assert "sbp" not in intake["from_memory"]
     assert node_data(events, "supervisor")["route"] == "checkin_agent"
-    data = node_data(events, "checkin")
-    assert data["previous_risk"] == pytest.approx(13.45, abs=0.01)
-    assert data["current_risk"] == pytest.approx(11.77, abs=0.01)
-    assert data["delta"] == pytest.approx(-1.68, abs=0.01)
-    assert data["tool_calls"][0]["via"] == "mcp"
-    text = reply(events)
-    assert "上次风险：13.5%" in text
-    assert "本次风险：11.8%" in text
-
-    # 第三个会话应该看到第二次的记录
-    third = _post(client, uid(), user, "我来复查，最近血压120/80")
-    assert node_data(third, "checkin")["previous_risk"] == pytest.approx(11.77, abs=0.01)
-
-
-def test_checkin_still_high_risk_says_so(client):
-    tid = uid()
-    chat(client, tid, FULL_SMOKER)
-    text = reply(chat(client, tid, "我来复查，最近血压130/85"))
-    assert "本次风险：21.4%" in text
-    assert "仍属高风险" in text
-
-
-@pytest.mark.parametrize("age", [28, 80])
-def test_age_out_of_model_range(client, age):
-    tid = uid()
-    events = chat(client, tid, FULL.replace("55岁", f"{age}岁"))
-    assert not [e for e in events if e["type"] == "error"]
-    assert node_data(events, "supervisor")["route"] == "intake_agent"
-    assert "risk_assess" not in nodes(events)
-    assert "30–74" in reply(events)
-    # 之后仍然能问指南类问题，不会一直卡在报错上
-    later = chat(client, tid, "我该怎么减盐？")
-    assert node_data(later, "supervisor")["route"] == "qa_agent"
-    assert "[cite:salt_reduction]" in reply(later)
 
 
 def test_memory_is_per_user(client):

@@ -42,6 +42,8 @@ function streamResponse(text: string) {
 
 type ChatHandler = (body: Record<string, string>) => Response | Promise<Response>;
 
+let followup: object = { status: "none" };
+
 function mockServer(chat: ChatHandler = () => streamResponse(sse(FULL_RUN)), health: object | null = { ok: true, mock: true }) {
   const bodies: Record<string, string>[] = [];
   vi.stubGlobal(
@@ -50,6 +52,9 @@ function mockServer(chat: ChatHandler = () => streamResponse(sse(FULL_RUN)), hea
       if (url === "/api/health") {
         if (!health) throw new Error("down");
         return new Response(JSON.stringify(health), { headers: { "content-type": "application/json" } });
+      }
+      if (url.startsWith("/api/followup")) {
+        return new Response(JSON.stringify(followup), { headers: { "content-type": "application/json" } });
       }
       const body = JSON.parse(String(init?.body));
       bodies.push(body);
@@ -64,6 +69,7 @@ const send = (name = /开始一次风险评估/) => userEvent.click(screen.getBy
 const finished = () => waitFor(() => expect(screen.getByRole("button", { name: /发送/ })).toBeEnabled());
 
 beforeEach(() => {
+  followup = { status: "none" };
   localStorage.clear();
   vi.unstubAllGlobals();
 });
@@ -276,5 +282,107 @@ describe("App", () => {
     const sources = walk(join(process.cwd(), "src")).filter((f) => /\.tsx?$/.test(f) && !/\.test\./.test(f));
     expect(sources.length).toBeGreaterThan(0);
     for (const file of sources) expect(readFileSync(file, "utf8")).not.toContain("dangerouslySetInnerHTML");
+  });
+
+  describe("随访", () => {
+    const question = [
+      node("checkin_question", "checkin_agent", { key: "adherence", step: 1, total: 2 }, 0),
+      { type: "message", content: "最近在限盐、运动这些方面做得怎么样？" },
+      { type: "done" },
+    ];
+
+    it("没有计划时不显示提醒", async () => {
+      mockServer();
+      render(<App />);
+      await screen.findByText(/Mock 演示模式/);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "开始复查" })).not.toBeInTheDocument();
+    });
+
+    it("未到期显示下次复查日期", async () => {
+      followup = { status: "upcoming", due_date: "2027-01-30", days_until: 90, level: "intermediate" };
+      mockServer();
+      render(<App />);
+      expect(await screen.findByText(/下次复查：2027-01-30/)).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("到期提醒，点开始复查发送我来复查", async () => {
+      followup = { status: "due", due_date: "2027-01-30", days_until: 0, level: "intermediate" };
+      const bodies = mockServer(() => streamResponse(sse(question)));
+      render(<App />);
+      expect(await screen.findByRole("alert")).toHaveTextContent("已到复查时间");
+      await userEvent.click(screen.getByRole("button", { name: "开始复查" }));
+      await finished();
+      expect(bodies[0].message).toBe("我来复查");
+    });
+
+    it("逾期显示天数", async () => {
+      followup = { status: "overdue", due_date: "2027-01-30", days_until: -30, level: "high" };
+      mockServer();
+      render(<App />);
+      expect(await screen.findByRole("alert")).toHaveTextContent("复查已逾期 30 天");
+    });
+
+    it("问诊中提示回答、隐藏提醒，轨迹显示题号", async () => {
+      followup = { status: "due", due_date: "2027-01-30", days_until: 0, level: "intermediate" };
+      mockServer(() => streamResponse(sse(question)));
+      render(<App />);
+      await screen.findByRole("alert");
+      await userEvent.click(screen.getByRole("button", { name: "开始复查" }));
+      await finished();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent("请回答上面的随访问题");
+      expect(screen.getByText("随访问诊")).toBeInTheDocument();
+      expect(screen.getByText(/第 1\/2 题/)).toBeInTheDocument();
+      expect(screen.getByText(/限盐/)).toBeInTheDocument();
+    });
+
+    it("每轮结束后刷新到期状态，带上 user_id", async () => {
+      mockServer();
+      render(<App />);
+      await screen.findByText(/Mock 演示模式/);
+      followup = { status: "upcoming", due_date: "2027-01-30", days_until: 90, level: "intermediate" };
+      await send();
+      await finished();
+      expect(await screen.findByText(/下次复查：2027-01-30/)).toBeInTheDocument();
+      const urls = vi.mocked(fetch).mock.calls.map((c) => String(c[0])).filter((u) => u.startsWith("/api/followup"));
+      expect(urls.length).toBeGreaterThanOrEqual(2);
+      expect(urls[0]).toContain(encodeURIComponent(localStorage.getItem("healthpilot-user")!));
+    });
+
+    it("接口失败时页面照常工作", async () => {
+      const bodies: unknown[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string, init?: RequestInit) => {
+          if (url === "/api/health") return new Response(JSON.stringify({ ok: true, mock: true }));
+          if (url.startsWith("/api/followup")) throw new Error("down");
+          bodies.push(init?.body);
+          return streamResponse(sse(FULL_RUN));
+        }),
+      );
+      render(<App />);
+      await send();
+      await finished();
+      expect(bodies).toHaveLength(1);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("问诊中出现急症时显示中止提示", async () => {
+      mockServer(() =>
+        streamResponse(
+          sse([
+            node("checkin", "checkin_agent", { red_flags: ["chest_pain"] }),
+            { type: "message", content: "请立即拨打120" },
+            { type: "done" },
+          ]),
+        ),
+      );
+      render(<App />);
+      await send();
+      await finished();
+      expect(screen.getByText(/发现急症信号，随访已中止/)).toBeInTheDocument();
+    });
   });
 });
