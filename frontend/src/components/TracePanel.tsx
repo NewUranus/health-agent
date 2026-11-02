@@ -22,7 +22,8 @@ function TraceCard({ event, turn, highlighted }: { event: NodeEvent; turn: numbe
       </p>}
       {data.followup && <p>{data.followup}</p>}
       {data.degraded && <p className="warning">模型暂不可用，已降级为本地模板。</p>}
-      {data.fallback && <p className="warning">生成内容未通过校验，已使用安全模板。</p>}
+      {data.no_evidence && <p className="warning">没有足够依据，已拒答。</p>}
+      {data.fallback && !data.no_evidence && <p className="warning">生成内容未通过校验，已使用安全模板。</p>}
       {data.prompt_version && <p>提示词版本 {data.prompt_version}</p>}
       {(data.tool_calls ?? []).map((call, index) => <details key={index}>
         <summary>{call.tool} · MCP{call.cached ? " · 缓存命中" : ""}</summary>
@@ -30,7 +31,7 @@ function TraceCard({ event, turn, highlighted }: { event: NodeEvent; turn: numbe
       </details>)}
       {(data.chunks ?? []).map((chunk, index) => <div key={`${chunk.id}:${index}`} tabIndex={-1}
         className={`source-card${highlighted === `${turn}:${chunk.id}` ? " highlight" : ""}`}>
-        <b>{chunk.title}</b><p>{chunk.source}</p><p>相关度 {Number(chunk.score).toFixed(3)}</p>
+        <b>{chunk.title}</b><p>{chunk.source}</p>{chunk.page != null && <p>第 {chunk.page} 页</p>}<p>相关度 {Number(chunk.score).toFixed(3)}</p>
       </div>)}
       {event.node === "checkin_question" && <p>第 {data.step}/{data.total} 题</p>}
       {event.node === "checkin" && <>

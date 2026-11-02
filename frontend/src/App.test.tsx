@@ -289,6 +289,15 @@ describe("App", () => {
     expect(screen.getByText(/已使用安全模板/)).toBeInTheDocument();
   });
 
+  it("拒答时轨迹显示没有依据，不说用了模板", async () => {
+    mockServer(() => streamResponse(sse([node("answer", "qa_agent", { chunks: [], no_evidence: true, fallback: true }), { type: "message", content: "无法回答" }, { type: "done" }])));
+    render(<App />);
+    await send();
+    await finished();
+    expect(screen.getByText(/没有足够依据，已拒答/)).toBeInTheDocument();
+    expect(screen.queryByText(/已使用安全模板/)).not.toBeInTheDocument();
+  });
+
   it("源码不使用 dangerouslySetInnerHTML", () => {
     const walk = (dir: string): string[] =>
       readdirSync(dir).flatMap((f) => {

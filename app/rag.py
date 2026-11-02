@@ -20,6 +20,7 @@ class Chunk:
     source: str
     text: str
     score: float = 0.0
+    page: int | None = None
 
 
 def tokenize(text):

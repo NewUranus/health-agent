@@ -23,6 +23,7 @@ from app.verify import verify_advice
 
 logger = logging.getLogger(__name__)
 
+NO_EVIDENCE = "资料库里没有找到相关依据，无法回答这个问题，建议咨询医生。"
 DISCLAIMER = "> 仅为技术演示，不构成医疗建议。"
 OWNERS = {"safety_check": "orchestrator", "emergency": "orchestrator", "intake": "orchestrator", "supervisor": "orchestrator",
           "ask_missing": "intake_agent", "risk_assess": "assessment_agent", "retrieve": "intervention_agent", "advise": "intervention_agent",
@@ -73,8 +74,8 @@ def mark_degraded(data, node, exc):
 
 
 class Nodes:
-    def __init__(self, mcp, store, retriever, llm, mock):
-        self.mcp, self.store, self.retriever, self.llm, self.mock = mcp, store, retriever, llm, mock
+    def __init__(self, mcp, store, kb, llm, mock):
+        self.mcp, self.store, self.kb, self.llm, self.mock = mcp, store, kb, llm, mock
 
     async def invoke(self, prompt, payload):
         if self.llm is None:
@@ -182,7 +183,7 @@ class Nodes:
             queries.append("总胆固醇 偏高")
         chunks = {}
         for query in queries:
-            for chunk in await asyncio.to_thread(self.retriever.search, query, 1):
+            for chunk in await self.kb.search(query, 1, min_similarity=0):
                 chunks.setdefault(chunk.id, asdict(chunk))
         retrieved = list(chunks.values())[:6]
         return result({"chunks": retrieved}, retrieved=retrieved)
@@ -309,7 +310,10 @@ class Nodes:
                       reply="\n".join(lines), stage="assessed", profile=profile)
 
     async def answer(self, state):
-        chunks = [asdict(c) for c in await asyncio.to_thread(self.retriever.search, state["text"], 4)]
+        chunks = [asdict(c) for c in await self.kb.search(state["text"], 4)]
+        if not chunks:
+            return result({"chunks": [], "tool_calls": [], "no_evidence": True}, retrieved=[],
+                          reply=NO_EVIDENCE + "\n\n" + DISCLAIMER)
         prompt = load_prompt("answer")
         reply = template_advice(chunks)
         traces = []
@@ -323,24 +327,33 @@ class Nodes:
                     traces.append(trace)
                     return trace["result"]
                 tools = mcp_tools_to_openai(await self.mcp.list_tools())
-                final, loop_trace = await run_tool_loop(self.llm, tools, call_tool,
-                    [SystemMessage(prompt.text), *state.get("messages", [])[-10:], HumanMessage(json.dumps({"问题": state["text"], "档案": state["profile"], "指南": chunks}, ensure_ascii=False))])
-                for call in loop_trace:
-                    if "error" in call["result"]:
-                        traces.append({**call, "via": "mcp", "cached": False})
-                content = final.content.replace(DISCLAIMER, "").strip()
-                checked = verify_advice(content, [c["id"] for c in chunks], per_item=False)
-                if checked.ok:
-                    reply = content
+                # 历史里的旧引用会被模型照抄，而它们不在本轮检索结果内
+                history = [message.model_copy(update={"content": re.sub(r"\s*\[cite:[^\]\s]+\]", "", message.content)}) if isinstance(message.content, str) else message
+                           for message in state.get("messages", [])[-10:]]
+                messages = [SystemMessage(prompt.text), *history, HumanMessage(json.dumps({"问题": state["text"], "档案": state["profile"], "指南": chunks}, ensure_ascii=False))]
+                allowed = [c["id"] for c in chunks]
+                for attempt in range(2):
+                    final, loop_trace = await run_tool_loop(self.llm, tools, call_tool, messages)
+                    for call in loop_trace:
+                        if "error" in call["result"]:
+                            traces.append({**call, "via": "mcp", "cached": False})
+                    content = final.content.replace(DISCLAIMER, "").strip()
+                    checked = verify_advice(content, allowed, per_item=False)
+                    if checked.ok:
+                        reply = content
+                        break
+                    messages = [*messages, HumanMessage("上面的回答未通过校验：" + "；".join(checked.problems) + f"。只能引用这些 id：{allowed}。资料不足时也要说明并引用最接近的资料。请重新回答。")]
                 else:
-                    data.update(fallback=True, problems=checked.problems)
+                    # 校验没过就拒答，不能把检索到的原文塞给用户：相似度够不代表人群和场景对得上
+                    reply = NO_EVIDENCE
+                    data.update(fallback=True, no_evidence=True, problems=checked.problems)
             except Exception as exc:
                 mark_degraded(data, "answer", exc)
         return result(data, retrieved=chunks, reply=reply + "\n\n" + DISCLAIMER)
 
 
-def build_graph(mcp, store, retriever, llm, mock, checkpointer):
-    nodes = Nodes(mcp, store, retriever, llm, mock)
+def build_graph(mcp, store, kb, llm, mock, checkpointer):
+    nodes = Nodes(mcp, store, kb, llm, mock)
 
     def wrapped(name):
         async def execute(state):

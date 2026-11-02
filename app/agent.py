@@ -17,6 +17,7 @@ from app.llm import make_embedder, make_llm
 from app.mcp_client import MCPClient
 from app.memory import memory_backend
 from app.rag import Retriever
+from app.knowledge import MemoryKnowledgeBase, PgKnowledgeBase
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -36,7 +37,7 @@ class HealthAgent:
         self.mcp = MCPClient()
         self.graph = None
         self._local_memory = None
-        self._retriever = None
+        self.kb = None
         self._locks = WeakValueDictionary()
 
     async def __aenter__(self):
@@ -49,9 +50,14 @@ class HealthAgent:
                 if not os.getenv("DATABASE_URL"):
                     self._local_memory = (self.checkpointer, self.store)
             await self.stack.enter_async_context(self.mcp)
-            if self._retriever is None:
-                self._retriever = await asyncio.to_thread(Retriever.from_dir, ROOT / "corpus", make_embedder(self.mock))
-            self.graph = build_graph(self.mcp, self.store, self._retriever, make_llm(self.mock), self.mock, self.checkpointer)
+            if self.kb is None:
+                url = os.getenv("DATABASE_URL")
+                self.kb = PgKnowledgeBase(url, make_embedder(self.mock)) if url else MemoryKnowledgeBase(make_embedder(self.mock))
+            self.stack.push_async_callback(self.kb.close)
+            await self.kb.setup()
+            builtin = await asyncio.to_thread(Retriever.from_dir, ROOT / "corpus")
+            await self.kb.seed_builtin(builtin.chunks)
+            self.graph = build_graph(self.mcp, self.store, self.kb, make_llm(self.mock), self.mock, self.checkpointer)
         except BaseException:
             await self.stack.aclose()
             raise
@@ -84,7 +90,14 @@ class HealthAgent:
         reply = ""
         def record(event):
             with path.open("a", encoding="utf-8") as file:
-                file.write(json.dumps(event, ensure_ascii=False) + "\n")
+                # 文档原文只通过事件返回页面，不写入轨迹日志。
+                logged = {**event}
+                if event.get("data", {}).get("chunks"):
+                    logged["data"] = {**event["data"], "chunks": [
+                        {k: v for k, v in chunk.items() if k in ("id", "page", "score")} for chunk in event["data"]["chunks"]]}
+                if event.get("type") == "message":
+                    logged = {"type": "message", "content_omitted": True}
+                file.write(json.dumps(logged, ensure_ascii=False) + "\n")
             return event
         try:
             snapshot = await self.graph.aget_state(config, subgraphs=True)

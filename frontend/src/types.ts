@@ -29,6 +29,7 @@ export interface Source {
   title: string;
   source: string;
   score: number;
+  page?: number | null;
 }
 
 export interface ToolCall {
@@ -52,6 +53,7 @@ export interface NodeData extends Record<string, unknown> {
   followup?: string;
   degraded?: boolean;
   fallback?: boolean;
+  no_evidence?: boolean;
   prompt_version?: string;
   tool_calls?: ToolCall[];
   chunks?: Source[];
