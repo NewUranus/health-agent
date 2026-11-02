@@ -12,12 +12,13 @@ const row = { id: "salt", document_id: 1, document_title: "内置资料", source
 type Handler = (url: string, init: RequestInit) => Response | Promise<Response> | undefined;
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
 
-function server(custom: Handler = () => undefined) {
+function server(custom: Handler = () => undefined, { open = false } = {}) {
   const calls: { url: string; init: RequestInit }[] = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string, init: RequestInit = {}) => {
       calls.push({ url, init });
+      if (!open && !new Headers(init.headers).get("Authorization")) return json({ detail: "密码错误" }, 401);
       const special = await custom(url, init);
       if (special) return special;
       if (url.startsWith("/api/admin/stats")) return json(stats);
@@ -35,7 +36,7 @@ function server(custom: Handler = () => undefined) {
 }
 
 async function login(password = "secret") {
-  await userEvent.type(screen.getByLabelText(/密码/), password);
+  await userEvent.type(await screen.findByLabelText(/密码/), password);
   await userEvent.click(screen.getByRole("button", { name: /登录/ }));
 }
 
@@ -50,7 +51,7 @@ describe("AdminApp", () => {
     render(<AdminApp />);
     await login();
     expect(await screen.findByText("内置资料")).toBeInTheDocument();
-    expect(new Headers(calls[0].init.headers).get("Authorization")).toBe("Bearer secret");
+    expect(calls.some((c) => new Headers(c.init.headers).get("Authorization") === "Bearer secret")).toBe(true);
     expect(calls.every((c) => !c.url.includes("secret"))).toBe(true);
     expect(sessionStorage.getItem("healthpilot-admin")).toBe("secret");
   });
@@ -64,11 +65,43 @@ describe("AdminApp", () => {
     expect(sessionStorage.getItem("healthpilot-admin")).toBeNull();
   });
 
-  it("后台未启用时提示", async () => {
-    server(() => json({ detail: "后台未启用。" }, 503));
+  it("服务器没配密码时直接进后台，不显示登录和退出", async () => {
+    const calls = server(undefined, { open: true });
     render(<AdminApp />);
-    await login();
-    expect(await screen.findByText(/后台未启用/)).toBeInTheDocument();
+    expect(await screen.findByText("内置资料")).toBeInTheDocument();
+    expect(screen.queryByLabelText(/密码/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /退出登录/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(calls.every((c) => !new Headers(c.init.headers).get("Authorization"))).toBe(true);
+    await userEvent.click(screen.getByRole("tab", { name: "向量库" }));
+    expect(await screen.findByText("每天吃盐不超过5克")).toBeInTheDocument();
+  });
+
+  it("免登录时忽略以前存的密码", async () => {
+    sessionStorage.setItem("healthpilot-admin", "old-password");
+    const calls = server(undefined, { open: true });
+    render(<AdminApp />);
+    expect(await screen.findByText("内置资料")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /退出登录/ })).not.toBeInTheDocument();
+    expect(sessionStorage.getItem("healthpilot-admin")).toBeNull();
+    expect(calls.some((c) => new Headers(c.init.headers).get("Authorization"))).toBe(false);
+  });
+
+  it("需要密码且已存密码时直接进后台，可以退出", async () => {
+    sessionStorage.setItem("healthpilot-admin", "secret");
+    server();
+    render(<AdminApp />);
+    expect(await screen.findByText("内置资料")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /退出登录/ }));
+    expect(screen.getByLabelText(/密码/)).toBeInTheDocument();
+    expect(sessionStorage.getItem("healthpilot-admin")).toBeNull();
+  });
+
+  it("需要密码时首次打开只显示登录页，不提示密码错误", async () => {
+    server();
+    render(<AdminApp />);
+    expect(await screen.findByLabelText(/密码/)).toBeInTheDocument();
+    expect(screen.queryByText(/密码错误/)).not.toBeInTheDocument();
   });
 
   it("sessionStorage 不可用时也能登录", async () => {

@@ -35,6 +35,8 @@ function pageLabel(page: number | null | undefined) {
 
 export default function AdminApp() {
   const [token, setToken] = useState(storedPassword);
+  // 服务器没配置 ADMIN_PASSWORD 时免登录：先不带密码试一次，再决定是否显示登录页
+  const [access, setAccess] = useState<"checking" | "open" | "locked">("checking");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [tab, setTab] = useState("文档");
@@ -42,7 +44,7 @@ export default function AdminApp() {
 
   const api: Api = useCallback(async <T,>(path: string, init: RequestInit = {}): Promise<T> => {
     const headers = new Headers(init.headers);
-    headers.set("Authorization", `Bearer ${token}`);
+    if (token) headers.set("Authorization", `Bearer ${token}`);
     let response: Response;
     try { response = await fetch(`/api/admin${path}`, { ...init, headers }); }
     catch { throw new Error("网络连接失败，请稍后重试。"); }
@@ -50,7 +52,6 @@ export default function AdminApp() {
       storePassword(""); setToken(""); setPassword(""); setDocuments([]);
       throw new Error("密码错误");
     }
-    if (response.status === 503) throw new Error("后台未启用");
     const body = await response.json();
     if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : "请求失败，请稍后重试。");
     return body as T;
@@ -64,8 +65,22 @@ export default function AdminApp() {
     setDocuments(body.documents);
   }, [api]);
   useEffect(() => {
-    if (token) void refresh().catch(reportError);
-  }, [token, refresh, reportError]);
+    if (access !== "checking") return;
+    const controller = new AbortController();
+    fetch("/api/admin/documents", { signal: controller.signal })
+      .then((response) => {
+        if (controller.signal.aborted) return;
+        // 免登录时清掉以前存的密码，不留过期状态
+        if (response.ok) { storePassword(""); setToken(""); }
+        setAccess(response.ok ? "open" : "locked");
+      })
+      .catch(() => { if (!controller.signal.aborted) setAccess("locked"); });
+    return () => controller.abort();
+  }, [access]);
+  const entered = access === "open" || (access === "locked" && !!token);
+  useEffect(() => {
+    if (entered) void refresh().catch(reportError);
+  }, [entered, refresh, reportError]);
 
   function login(event: FormEvent) {
     event.preventDefault(); setError(""); storePassword(password); setToken(password);
@@ -74,10 +89,10 @@ export default function AdminApp() {
   return <main className="admin-shell">
     <header className="admin-header">
       <div><a href="/" className="admin-brand">HealthPilot</a><h1>知识库后台</h1><p>内容发布前请人工核对</p></div>
-      {token && <button onClick={() => { storePassword(""); setToken(""); setPassword(""); setError(""); setDocuments([]); }}>退出登录</button>}
+      {access === "locked" && token && <button onClick={() => { storePassword(""); setToken(""); setPassword(""); setError(""); setDocuments([]); }}>退出登录</button>}
     </header>
     {error && <p role="alert" className="admin-error">{error}</p>}
-    {!token ? <form className="admin-panel admin-login" onSubmit={login}>
+    {access === "checking" ? <p className="admin-panel">正在连接…</p> : !entered ? <form className="admin-panel admin-login" onSubmit={login}>
       <h2>管理员登录</h2>
       <label>密码<input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required /></label>
       <button className="admin-primary" type="submit">登录</button>

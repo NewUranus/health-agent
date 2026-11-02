@@ -91,11 +91,10 @@ def create_app():
     @application.middleware("http")
     async def admin_auth(request: Request, call_next):
         if request.url.path.startswith("/api/admin/"):
+            # 没配置 ADMIN_PASSWORD 时后台免登录，配置后才校验
             password = os.getenv("ADMIN_PASSWORD")
-            if not password:
-                return JSONResponse(status_code=503, content={"detail": "后台未启用。"})
             authorization = request.headers.get("authorization", "")
-            if not hmac.compare_digest(authorization.encode(), ("Bearer " + password).encode()):
+            if password and not hmac.compare_digest(authorization.encode(), ("Bearer " + password).encode()):
                 return JSONResponse(status_code=401, content={"detail": "密码错误"})
         return await call_next(request)
 

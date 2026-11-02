@@ -42,7 +42,7 @@ QWEN_MODEL=...
 QWEN_EMBEDDING_MODEL=...
 DOMAIN=demo.你的域名.com
 PG_PASSWORD=换成一个随机长密码
-ADMIN_PASSWORD=后台密码，用随机长密码，不配置时后台不可用
+ADMIN_PASSWORD=可选，后台密码，不配置时后台免登录、任何人都能修改知识库
 DEMO_USER=client
 DEMO_PASSWORD_HASH='$2a$14$......'
 ```

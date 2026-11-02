@@ -60,10 +60,11 @@ def test_every_admin_route_needs_password(client, method, path):
     assert getattr(client, method)(path, headers={"Authorization": "Bearer wrong"}).status_code == 401
 
 
-def test_admin_disabled_without_password(client, monkeypatch):
+def test_admin_is_open_without_password(client, monkeypatch):
     monkeypatch.delenv("ADMIN_PASSWORD")
-    r = client.get("/api/admin/documents", headers=AUTH)
-    assert r.status_code == 503 and r.json()["detail"] == "后台未启用。"
+    assert client.get("/api/admin/documents").status_code == 200
+    assert client.get("/api/admin/stats").status_code == 200
+    assert client.get("/api/admin/documents", headers=AUTH).status_code == 200  # 带旧密码也不报错
 
 
 def test_public_routes_stay_public(client):

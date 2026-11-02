@@ -71,10 +71,10 @@ Pg 的 `embedding` 列类型是不带维度的 `vector`（数据量小，精确�
 
 ## HTTP（app/main.py）
 
-全部 `/api/admin/*` 需要请求头 `Authorization: Bearer <密码>`，密码来自环境变量 `ADMIN_PASSWORD`，**每次请求时读取**，用 `hmac.compare_digest` 比较。
+环境变量 `ADMIN_PASSWORD`，**每次请求时读取**：
 
-- 未配置 `ADMIN_PASSWORD`：一律 503，`{"detail": "后台未启用。"}`
-- 密码错误或缺失：401
+- 未配置：后台免登录，任何人都能访问（按项目所有者的决定，公开演示时不设密码）
+- 已配置：`/api/admin/*` 需要 `Authorization: Bearer <密码>`，用 `hmac.compare_digest` 比较，错误或缺失返回 401
 
 | 接口 | 说明 |
 |---|---|
@@ -115,7 +115,7 @@ Pg 的 `embedding` 列类型是不带维度的 `vector`（数据量小，精确�
 
 `location.pathname === "/admin"` 时渲染 `AdminApp`（`src/admin/AdminApp.tsx`，默认导出），否则渲染原来的 `App`。不引入路由库。
 
-- **登录**：输入密码，存 `sessionStorage` 的 `healthpilot-admin`（读写 try/catch）。请求 401 时清除并回到登录页，提示 `密码错误`。503 提示 `后台未启用`。不要把密码放进 URL 或日志
+- **登录**：打开时先不带密码请求一次，成功就直接进后台。返回 401 才显示登录页：输入密码，存 `sessionStorage` 的 `healthpilot-admin`（读写 try/catch）。之后请求 401 时清除并回到登录页，提示 `密码错误`。不要把密码放进 URL 或日志
 - **三个标签页**（`role="tab"`）：`文档`、`向量库`、`检索测试`
 - **文档**：上传表单（文件、标题、来源、版本）；文档列表显示标题、状态（`草稿`/`已发布`/`内置`）、块数。上传后打开草稿详情：每块显示 `第 N 页`、标题和可编辑文本，有 `保存`、`删除`；顶部提示 `请核对表格和数字后再发布` 和 `发布` 按钮。发布时按钮显示 `发布中…`。内置文档不显示删除按钮。删除文档前 `window.confirm`
 - **向量库**：顶部显示 stats（后端、模型、维度、文档数、向量数、门槛）；搜索框（`q`）和文档筛选；列表每条显示 id、文档名、页码、文本、`1024 维` 和可展开的向量预览；分页按钮 `上一页`、`下一页`，显示 `共 N 条`
@@ -126,5 +126,5 @@ Pg 的 `embedding` 列类型是不带维度的 `vector`（数据量小，精确�
 ## 部署
 
 - `docker-compose.yml` 的数据库镜像换成 `pgvector/pgvector:pg16`（设计方修改）
-- `.env` 增加 `ADMIN_PASSWORD`
+- 要给后台设密码时，在 `.env` 增加 `ADMIN_PASSWORD`
 - 上传的 PDF 不落盘、不进 git，只保存解析后的文本
