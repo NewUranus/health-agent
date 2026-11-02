@@ -1,6 +1,6 @@
 # HealthPilot
 
-心血管健康评估 Agent 演示项目。完整规格见 `docs/DESIGN.md` 和 `docs/DESIGN_V2.md`（两者冲突时以 V2 为准），实现必须与之一致。前端规格见 `docs/FRONTEND.md`，随访流程见 `docs/FOLLOWUP.md`。
+心血管健康评估 Agent 演示项目。完整规格见 `docs/DESIGN.md` 和 `docs/DESIGN_V2.md`（两者冲突时以 V2 为准），实现必须与之一致。前端规格见 `docs/FRONTEND.md`，随访流程见 `docs/FOLLOWUP.md`，知识库后台见 `docs/ADMIN.md`。
 
 ## 规则
 

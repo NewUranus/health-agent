@@ -8,6 +8,8 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 os.environ["HEALTH_AGENT_MOCK"] = "1"
+os.environ["ADMIN_PASSWORD"] = "test-admin"
+os.environ.pop("DATABASE_URL", None)
 
 
 @pytest.fixture(scope="session")

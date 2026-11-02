@@ -42,6 +42,7 @@ QWEN_MODEL=...
 QWEN_EMBEDDING_MODEL=...
 DOMAIN=demo.你的域名.com
 PG_PASSWORD=换成一个随机长密码
+ADMIN_PASSWORD=后台密码，用随机长密码，不配置时后台不可用
 DEMO_USER=client
 DEMO_PASSWORD_HASH='$2a$14$......'
 ```
@@ -66,7 +67,7 @@ docker compose logs -f
 git pull && docker compose up -d --build
 ```
 
-前端构建结果已提交在 `web/`，服务器不需要安装 Node，也不要在内存小的服务器上构建前端。
+后台在 `/admin`。前端构建结果已提交在 `web/`，服务器不需要安装 Node，也不要在内存小的服务器上构建前端。
 
 ## 6. 演示前检查清单
 
