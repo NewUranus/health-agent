@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import "./admin.css";
 
 type Document = {
@@ -104,7 +104,7 @@ export default function AdminApp() {
       <section role="tabpanel" id="admin-content" aria-label={tab}>
         {tab === "文档" && <Documents api={api} documents={documents} refresh={refresh} reportError={reportError} clearError={() => setError("")} />}
         {tab === "向量库" && <VectorLibrary api={api} documents={documents} reportError={reportError} />}
-        {tab === "检索测试" && <SearchTest api={api} reportError={reportError} />}
+        {tab === "检索测试" && <SearchTest api={api} documents={documents} reportError={reportError} clearError={() => setError("")} />}
       </section>
     </>}
   </main>;
@@ -273,24 +273,50 @@ function VectorLibrary({ api, documents, reportError }: SectionProps & { documen
   </div>;
 }
 
-function SearchTest({ api, reportError }: SectionProps) {
+function SearchTest({ api, documents, reportError, clearError }: SectionProps & { documents: Document[]; clearError: () => void }) {
   const [query, setQuery] = useState("");
+  const [documentId, setDocumentId] = useState("");
   const [result, setResult] = useState<{ results: SearchRow[]; min_similarity: number } | null>(null);
   const [busy, setBusy] = useState(false);
+  const request = useRef<AbortController | null>(null);
+  const published = documents.filter(document => document.status === "published");
+  const selected = published.find(document => String(document.id) === documentId);
+  useEffect(() => () => request.current?.abort(), []);
   async function search(event: FormEvent) {
-    event.preventDefault(); setBusy(true); setResult(null);
-    try { setResult(await api(`/search?${new URLSearchParams({ q: query, k: "4" })}`)); }
-    catch (reason) { reportError(reason); } finally { setBusy(false); }
+    event.preventDefault();
+    if (request.current || !query.trim()) return;
+    const controller = new AbortController();
+    request.current = controller;
+    clearError(); setBusy(true); setResult(null);
+    const params = new URLSearchParams({ q: query.trim(), k: "4" });
+    if (documentId) params.set("document_id", documentId);
+    try {
+      const value = await api<NonNullable<typeof result>>(`/search?${params}`, { signal: controller.signal });
+      if (!controller.signal.aborted) setResult(value);
+    } catch (reason) {
+      if (!controller.signal.aborted) reportError(reason);
+    } finally {
+      request.current = null;
+      if (!controller.signal.aborted) setBusy(false);
+    }
   }
   return <div className="admin-panel">
-    <h2>检索测试</h2><p className="admin-muted">使用与问答相同的检索逻辑，检查发布后的内容是否能被找到。</p>
+    <h2>检索测试</h2><p className="admin-muted">使用与问答相同的检索逻辑，可选择一份已发布 PDF，仅查看该文档中的搜索结果。</p>
     <form className="admin-filters" onSubmit={event => void search(event)}>
-      <label>输入问题<input type="search" value={query} onChange={e => setQuery(e.target.value)} required /></label>
+      <label>输入问题<input type="search" value={query} disabled={busy} onChange={e => { setQuery(e.target.value); setResult(null); }} required /></label>
+      <label>检索范围<select value={documentId} disabled={busy} onChange={e => { setDocumentId(e.target.value); setResult(null); clearError(); }}>
+        <option value="">全部已发布文档</option>
+        <optgroup label="已发布 PDF">{published.filter(document => !document.builtin).map(document =>
+          <option key={document.id} value={document.id}>{document.title}{document.version && ` · ${document.version}`}（{document.filename}）</option>)}</optgroup>
+        <optgroup label="内置资料">{published.filter(document => document.builtin).map(document =>
+          <option key={document.id} value={document.id}>{document.title}</option>)}</optgroup>
+      </select></label>
       <button className="admin-primary" disabled={busy || !query.trim()}>{busy ? "检索中…" : "检索"}</button>
     </form>
     {result && <>
+      <p>检索范围：{selected ? selected.title : "全部已发布文档"}</p>
       <p>向量相似度门槛：{result.min_similarity}（BM25 回退时不使用门槛）</p>
-      {!result.results.length && <p className="admin-review">没有达到门槛的结果，问答会拒答</p>}
+      {!result.results.length && <p className="admin-review">{documentId ? "所选文档中没有符合检索条件的结果，可尝试其他问题或切换到全部文档。" : "没有达到门槛的结果，问答会拒答"}</p>}
       <ul className="admin-list">{result.results.map(row => <li key={row.id}>
         <div className="admin-row"><strong>{row.title}</strong><span>相似度 / BM25 分：{row.score.toFixed(3)}</span></div>
         <p className="admin-muted">{row.id} · {row.source} {pageLabel(row.page)}</p><p className="admin-text">{row.text}</p>

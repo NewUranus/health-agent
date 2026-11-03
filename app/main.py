@@ -200,9 +200,9 @@ def create_app():
         return await application.state.agent.kb.list_chunks(document_id, q, limit, offset)
 
     @application.get("/api/admin/search")
-    async def search(q: str, k: int = Query(4, ge=1, le=200)):
+    async def search(q: str, k: int = Query(4, ge=1, le=200), document_id: int | None = Query(None, ge=1)):
         kb = application.state.agent.kb
-        hits = await kb.search(q, k)
+        hits = await kb.search(q, k, document_id=document_id)
         return {"results": [{key: getattr(chunk, key) for key in ("id", "title", "source", "page", "text", "score")} for chunk in hits],
                 "min_similarity": kb.min_similarity}
 

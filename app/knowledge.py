@@ -139,7 +139,7 @@ class KnowledgeBase:
         except Exception:
             raise KnowledgeError('向量生成失败，文档保持草稿。') from None
 
-    async def search(self, query, k=4, min_similarity=None):
+    async def search(self, query, k=4, min_similarity=None, *, document_id=None):
         if k <= 0:
             return []
         query = expand_query(query)
@@ -150,10 +150,10 @@ class KnowledgeBase:
                 logger.warning('向量查询失败，本次退回 BM25')
             else:
                 threshold = self.min_similarity if min_similarity is None else min_similarity
-                return await self.vector_search(vector, k, threshold)
+                return await self.vector_search(vector, k, threshold, document_id=document_id)
         else:
             logger.warning('未配置向量模型，本次使用 BM25')
-        return await asyncio.to_thread(bm25, await self.published_rows(), query, k)
+        return await asyncio.to_thread(bm25, await self.published_rows(document_id=document_id), query, k)
 
     async def list_chunks(self, document_id=None, q=None, limit=50, offset=0):
         rows = [r for r in await self.published_rows() if (document_id is None or r['document_id'] == document_id)
@@ -275,14 +275,15 @@ class MemoryKnowledgeBase(KnowledgeBase):
                 if cid not in ids:
                     del self.documents[document['id']]
 
-    async def published_rows(self):
+    async def published_rows(self, document_id=None):
         return [copy.deepcopy(c) | {'document_title': d['title'], 'source': d['source']}
-                for d in sorted(self.documents.values(), key=lambda d: d['id']) if d['status'] == 'published'
+                for d in sorted(self.documents.values(), key=lambda d: d['id'])
+                if d['status'] == 'published' and (document_id is None or d['id'] == document_id)
                 for c in sorted(d['chunks'], key=lambda c: c['seq'])]
 
-    async def vector_search(self, vector, k, threshold):
+    async def vector_search(self, vector, k, threshold, document_id=None):
         scored = []
-        for row in await self.published_rows():
+        for row in await self.published_rows(document_id=document_id):
             other = row['embedding']
             if other is None or len(other) != len(vector):
                 continue
@@ -448,23 +449,25 @@ class PgKnowledgeBase(KnowledgeBase):
                 if cid not in ids:
                     await conn.execute('DELETE FROM knowledge_documents WHERE id = %s', (row['id'],))
 
-    async def published_rows(self):
+    async def published_rows(self, document_id=None):
         async with self.connection() as conn:
             rows = await (await conn.execute('''SELECT c.id, c.document_id, c.seq, c.page, c.heading, c.text,
                 c.embedding::text AS embedding, d.title AS document_title, d.source
                 FROM knowledge_chunks c JOIN knowledge_documents d ON d.id = c.document_id
-                WHERE d.status = 'published' ORDER BY d.id, c.seq''')).fetchall()
+                WHERE d.status = 'published' AND (%s::bigint IS NULL OR c.document_id = %s)
+                ORDER BY d.id, c.seq''', (document_id, document_id))).fetchall()
             for row in rows:
                 row['embedding'] = json.loads(row['embedding']) if row['embedding'] is not None else None
             return rows
 
-    async def vector_search(self, vector, k, threshold):
+    async def vector_search(self, vector, k, threshold, document_id=None):
         async with self.connection() as conn:
             rows = await (await conn.execute('''SELECT * FROM (
                 SELECT c.id, c.page, c.text, d.title AS document_title, d.source,
                     1 - (c.embedding <=> %s::vector) AS score
                 FROM knowledge_chunks c JOIN knowledge_documents d ON d.id = c.document_id
                 WHERE d.status = 'published' AND c.embedding IS NOT NULL AND vector_dims(c.embedding) = %s
+                    AND (%s::bigint IS NULL OR c.document_id = %s)
                 ) ranked WHERE score >= %s ORDER BY score DESC, id LIMIT %s''',
-                (json.dumps(vector), len(vector), threshold, k))).fetchall()
+                (json.dumps(vector), len(vector), document_id, document_id, threshold, k))).fetchall()
             return [hit(row, row['score']) for row in rows]
