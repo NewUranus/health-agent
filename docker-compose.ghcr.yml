@@ -1,0 +1,5 @@
+# 与原 docker-compose.yml 合并；部署时必须使用 --no-build。
+# 镜像版本由本地部署脚本根据目标 Git 提交设置，不使用浮动标签。
+services:
+  app:
+    image: ${HEALTHPILOT_DEPLOY_IMAGE:?请先设置与目标提交对应的 GHCR 镜像地址}
