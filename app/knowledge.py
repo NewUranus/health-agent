@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import re
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -78,6 +79,39 @@ class KnowledgeBase:
     def __init__(self, embedder=None, min_similarity=None):
         self.embedder = embedder
         self.min_similarity = float(os.getenv('RAG_MIN_SIMILARITY', '0.44')) if min_similarity is None else min_similarity
+        self._query_vectors = OrderedDict()
+        self._query_tasks = {}
+        self._query_embedder = embedder
+
+    async def query_vector(self, query):
+        """只缓存成功的查询向量，检索结果始终读取当前已发布内容。"""
+        if self._query_embedder is not self.embedder:
+            self._query_vectors.clear()
+            self._query_tasks.clear()
+            self._query_embedder = self.embedder
+        if query in self._query_vectors:
+            self._query_vectors.move_to_end(query)
+            return list(self._query_vectors[query])
+        task = self._query_tasks.get(query)
+        if task is None:
+            task = asyncio.create_task(self.embed([query]))
+            self._query_tasks[query] = task
+
+            def completed(done):
+                # 被替换的模型任务不能污染新模型的缓存；失败留给下次重试。
+                current = self._query_tasks.get(query) is done
+                if current:
+                    self._query_tasks.pop(query, None)
+                if done.cancelled() or done.exception() is not None:
+                    return
+                if current:
+                    self._query_vectors[query] = tuple(done.result()[0])
+                    if len(self._query_vectors) > 256:
+                        self._query_vectors.popitem(last=False)
+
+            task.add_done_callback(completed)
+        # 某个请求取消时，不取消其他请求仍在等待的向量计算。
+        return list((await asyncio.shield(task))[0])
 
     async def embed(self, texts):
         if self.embedder is None:
@@ -111,7 +145,7 @@ class KnowledgeBase:
         query = expand_query(query)
         if self.embedder is not None:
             try:
-                vector = (await self.embed([query]))[0]
+                vector = await self.query_vector(query)
             except Exception:
                 logger.warning('向量查询失败，本次退回 BM25')
             else:

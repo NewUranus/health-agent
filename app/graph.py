@@ -182,8 +182,10 @@ class Nodes:
         if profile["total_chol"] >= 5.2:
             queries.append("总胆固醇 偏高")
         chunks = {}
-        for query in queries:
-            for chunk in await self.kb.search(query, 1, min_similarity=0):
+        # 独立查询并行执行，仍按查询顺序去重，保持建议来源顺序稳定。
+        batches = await asyncio.gather(*(self.kb.search(query, 1, min_similarity=0) for query in queries))
+        for batch in batches:
+            for chunk in batch:
                 chunks.setdefault(chunk.id, asdict(chunk))
         retrieved = list(chunks.values())[:6]
         return result({"chunks": retrieved}, retrieved=retrieved)
