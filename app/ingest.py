@@ -30,6 +30,15 @@ def parse_pdf(data: bytes) -> list[dict]:
         return pages
 
 
+# 编号后必须是大写字母或汉字：排除"25 mg or chlorthalidone"这类剂量行
+HEADING = re.compile(r"^第.+[章节]|^\d+(\.\d+)*\s+[A-Z\u4e00-\u9fff]|^[一二三四五六七八九十]+、")
+
+
+def is_heading(line: str) -> bool:
+    """以句末标点结尾的是正文（如"40 mg once a day)."），不是标题。"""
+    return len(line) <= 40 and bool(HEADING.match(line)) and not re.search(r"[。.；;，,:：)）]$", line)
+
+
 def chunk_pages(pages: list[dict], max_chars: int = 500, overlap: int = 50) -> list[dict]:
     if max_chars <= 0 or not 0 <= overlap < max_chars:
         raise IngestError("切块长度必须为正数，重叠长度必须小于切块长度。")
@@ -49,7 +58,7 @@ def chunk_pages(pages: list[dict], max_chars: int = 500, overlap: int = 50) -> l
         for line in page_lines:
             if line in noise or re.fullmatch(r"\d+|第\s*\d+\s*页|-\s*\d+\s*-", line):
                 continue
-            if len(line) <= 40 and re.match(r"^第.+[章节]|^\d+(\.\d+)*\s|^[一二三四五六七八九十]+、", line):
+            if is_heading(line):
                 flush()
                 heading = line
             if buffer and len(buffer) + 1 + len(line) > max_chars:

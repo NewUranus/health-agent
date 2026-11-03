@@ -95,3 +95,30 @@ def test_long_line_is_not_treated_as_heading():
     long_line = "1 " + "很长的一句话" * 10
     chunks = chunk_pages([page(1, "第一章 总则\n" + long_line)])
     assert chunks[0]["heading"] == "第一章 总则"
+
+
+@pytest.mark.parametrize(
+    "line, expected",
+    [
+        ("第一章 总则", True),
+        ("3.7\t Frequency of re-assessment", True),
+        ("1.1 诊断标准", True),
+        ("二、 治疗目标", True),
+        ("40 mg once a day).", False),
+        ("12.5 mg 每日一次。", False),
+        ("2 次/日，", False),
+        ("130/80 mmHg", False),
+        ("3 Recommendations", True),
+        ("25 mg or chlorthalidone", False),
+        ("5 次每周", True),
+    ],
+)
+def test_is_heading(line, expected):
+    from app.ingest import is_heading
+
+    assert is_heading(line) is expected
+
+
+def test_dosage_line_does_not_start_a_new_chunk():
+    chunks = chunk_pages([page(1, "3.4 Drug classes\nUse amlodipine 5 mg once a day.\n40 mg once a day).\nMore text here.")])
+    assert [c["heading"] for c in chunks] == ["3.4 Drug classes"]
