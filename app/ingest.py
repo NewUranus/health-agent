@@ -39,6 +39,56 @@ def is_heading(line: str) -> bool:
     return len(line) <= 40 and bool(HEADING.match(line)) and not re.search(r"[。.；;，,:：)）]$", line)
 
 
+def clean_pages(pages: list[dict]) -> list[dict]:
+    """切块前恢复常见排版断行；保留页码、数字、标题和列表边界。"""
+    # 仅合并能确认的断词，其余连字符保留，避免把 low-density 等复合词改错。
+    joined_words = {
+        "lifestyle", "hypertension", "nonpharmacological", "pharmacological",
+        "cardiovascular", "recommendation", "recommendations", "treatment",
+        "intervention", "interventions", "modification", "modifications", "prevention",
+    }
+    counts = Counter(line for page in pages for line in {line.strip() for line in page['text'].splitlines()} if line)
+    noise = {line for line, count in counts.items() if len(pages) >= 3 and count > len(pages) / 2}
+    cleaned = []
+    for page in pages:
+        lines = page['text'].replace('\u00a0', ' ').splitlines()
+        output = []
+        pending_bullet = False
+        for original in lines:
+            line = original.strip()
+            if re.fullmatch(r"[\[•●▪◦]+", line):
+                pending_bullet = True
+                continue
+            if line in noise or re.fullmatch(r"\d+|第\s*\d+\s*页|-\s*\d+\s*-", line):
+                continue
+            if not line:
+                output.append('')
+                continue
+            # 不改写 [1]、[95% CI] 等引用或统计表达式。
+            line = re.sub(r"^(?:\[\s+(?=[A-Za-z\u4e00-\u9fff])|[•●▪◦]\s*)", '- ', line)
+            if pending_bullet and not line.startswith('- '):
+                line = '- ' + line
+            pending_bullet = False
+            boundary = (is_heading(line) or line.startswith('- ') or
+                        bool(re.match(r"\d|[一二三四五六七八九十]+[、.]", line)) or
+                        bool(re.search(r"\t| {2,}", original.strip())))
+            previous = output[-1] if output else ''
+            if previous and not boundary and not is_heading(previous) and not re.search(r"[。！？.!?;；:：]$", previous):
+                # 英文小写续行较明确；中文与表格不猜测合段。
+                if re.match(r"[a-z]", line) and re.search(r"[A-Za-z][\-\u00ad]?$", previous):
+                    tail = re.search(r"([A-Za-z]+)([\-\u00ad])$", previous)
+                    head = re.match(r"[a-z]+", line)
+                    if tail and head:
+                        word = (tail[1] + head[0]).lower()
+                        output[-1] = previous[:-1] + line if tail[2] == '\u00ad' or word in joined_words else previous + line
+                    else:
+                        output[-1] = previous + ' ' + line
+                    continue
+            output.append(line)
+        cleaned.append({**page, 'text': '\n'.join(output)})
+    return cleaned
+
+
 def chunk_pages(pages: list[dict], max_chars: int = 500, overlap: int = 50) -> list[dict]:
     if max_chars <= 0 or not 0 <= overlap < max_chars:
         raise IngestError("切块长度必须为正数，重叠长度必须小于切块长度。")

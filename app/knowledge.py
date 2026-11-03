@@ -10,6 +10,7 @@ import re
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from rank_bm25 import BM25Okapi
 
@@ -52,6 +53,7 @@ def hit(row, score=0):
 def preview(row):
     vector = row['embedding']
     return {key: row[key] for key in ('id', 'document_id', 'document_title', 'source', 'page', 'heading', 'text')} | {
+        'variant': row.get('variant', 'standard'), 'comparison_id': row.get('comparison_id', ''),
         'dimension': len(vector) if vector is not None else None,
         'vector_preview': [round(x, 4) for x in vector[:8]] if vector is not None else None}
 
@@ -82,6 +84,22 @@ class KnowledgeBase:
         self._query_vectors = OrderedDict()
         self._query_tasks = {}
         self._query_embedder = embedder
+
+    async def create_draft(self, title, source, version, chunks, filename):
+        documents = await self.create_drafts([{
+            'title': title, 'source': source, 'version': version, 'chunks': chunks,
+            'filename': filename, 'variant': 'standard', 'comparison_id': '',
+        }])
+        return documents[0]
+
+    async def create_comparison(self, title, source, version, raw_chunks, clean_chunks, filename):
+        """一次上传的两版原子写入同一个知识库，标记不参与向量化。"""
+        comparison_id = uuid4().hex
+        return await self.create_drafts([
+            {'title': title, 'source': source, 'version': version, 'filename': filename,
+             'variant': variant, 'comparison_id': comparison_id, 'chunks': chunks}
+            for variant, chunks in [('raw', raw_chunks), ('clean', clean_chunks)]
+        ])
 
     async def query_vector(self, query):
         """只缓存成功的查询向量，检索结果始终读取当前已发布内容。"""
@@ -160,6 +178,31 @@ class KnowledgeBase:
                 and (not q or q.casefold() in r['text'].casefold())]
         return {'total': len(rows), 'chunks': [preview(r) for r in rows[max(0, offset):max(0, offset) + min(200, max(0, limit))]]}
 
+    async def compare(self, document_id, query, k=4):
+        document = await self.get_document(document_id)
+        comparison_id = document.get('comparison_id')
+        pair = [d for d in await self.list_documents()
+                if comparison_id and d.get('comparison_id') == comparison_id and d['status'] == 'published']
+        if len(pair) != 2 or {d.get('variant') for d in pair} != {'raw', 'clean'}:
+            raise KnowledgeError('请先发布同次上传的原始版和清洗版。')
+        query = expand_query(query)
+        vector = None
+        if self.embedder is not None:
+            try:
+                vector = await self.query_vector(query)
+            except Exception:
+                logger.warning('对比查询向量生成失败，两版均退回 BM25')
+        results = []
+        for doc in sorted(pair, key=lambda d: d['variant'] != 'raw'):
+            if vector is not None:
+                hits = await self.vector_search(vector, k, self.min_similarity, document_id=doc['id'])
+            else:
+                hits = await asyncio.to_thread(bm25, await self.published_rows(document_id=doc['id']), query, k)
+            results.append({'document_id': doc['id'], 'title': doc['title'], 'variant': doc['variant'],
+                            'results': [vars(hit) for hit in hits]})
+        return {'groups': results, 'mode': 'vector' if vector is not None else 'bm25',
+                'min_similarity': self.min_similarity}
+
     async def stats(self):
         docs = await self.list_documents()
         rows = await self.published_rows()
@@ -199,15 +242,17 @@ class MemoryKnowledgeBase(KnowledgeBase):
             result['chunks'] = [{k: v for k, v in row.items() if k != 'embedding'} for row in document['chunks']]
         return copy.deepcopy(result)
 
-    async def create_draft(self, title, source, version, chunks, filename):
+    async def create_drafts(self, drafts):
         async with self.lock:
-            doc_id = self.next_id
-            rows = make_chunks(doc_id, chunks)
-            self.next_id += 1
-            document = {'id': doc_id, 'title': title, 'source': source, 'version': version, 'filename': filename,
-                        'status': 'draft', 'builtin': False, 'created_at': now(), 'published_at': None, 'chunks': rows}
-            self.documents[doc_id] = document
-            return self.public_document(document, True)
+            documents = []
+            for offset, draft in enumerate(drafts):
+                doc_id = self.next_id + offset
+                rows = make_chunks(doc_id, draft['chunks'])
+                documents.append({**draft, 'id': doc_id, 'status': 'draft', 'builtin': False,
+                                  'created_at': now(), 'published_at': None, 'chunks': rows})
+            self.documents.update({d['id']: d for d in documents})
+            self.next_id += len(documents)
+            return [self.public_document(d, True) for d in documents]
 
     async def list_documents(self):
         return [self.public_document(d) for d in self.documents.values()]
@@ -242,7 +287,8 @@ class MemoryKnowledgeBase(KnowledgeBase):
                 chunk['embedding'] = vector
             document.update(status='published', published_at=now())
             self.documents = {i: d for i, d in self.documents.items()
-                              if i == doc_id or d['title'] != document['title'] or d['status'] != 'published'}
+                              if i == doc_id or d['title'] != document['title'] or d['status'] != 'published'
+                              or d.get('variant', 'standard') != document.get('variant', 'standard')}
             return self.public_document(document, True)
 
     async def delete_document(self, doc_id):
@@ -276,7 +322,8 @@ class MemoryKnowledgeBase(KnowledgeBase):
                     del self.documents[document['id']]
 
     async def published_rows(self, document_id=None):
-        return [copy.deepcopy(c) | {'document_title': d['title'], 'source': d['source']}
+        return [copy.deepcopy(c) | {'document_title': d['title'], 'source': d['source'],
+                                   'variant': d.get('variant', 'standard'), 'comparison_id': d.get('comparison_id', '')}
                 for d in sorted(self.documents.values(), key=lambda d: d['id'])
                 if d['status'] == 'published' and (document_id is None or d['id'] == document_id)
                 for c in sorted(d['chunks'], key=lambda c: c['seq'])]
@@ -316,6 +363,8 @@ class PgKnowledgeBase(KnowledgeBase):
                 filename TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('draft', 'published')),
                 builtin BOOLEAN NOT NULL DEFAULT FALSE, content_hash TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(), published_at TIMESTAMPTZ)''')
+            await conn.execute("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS variant TEXT NOT NULL DEFAULT 'standard'")
+            await conn.execute("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS comparison_id TEXT NOT NULL DEFAULT ''")
             await conn.execute('''CREATE TABLE IF NOT EXISTS knowledge_chunks (
                 id TEXT PRIMARY KEY CHECK (id ~ '^[[:alnum:]_-]+$'),
                 document_id BIGINT NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
@@ -344,15 +393,19 @@ class PgKnowledgeBase(KnowledgeBase):
         # 跨进程串行化写入，防止同标题并发发布或编辑覆盖正在生成的向量。
         await conn.execute('LOCK TABLE knowledge_documents IN SHARE ROW EXCLUSIVE MODE')
 
-    async def create_draft(self, title, source, version, chunks, filename):
+    async def create_drafts(self, drafts):
         async with self.connection() as conn:
             await self.lock_writes(conn)
-            row = await (await conn.execute('''INSERT INTO knowledge_documents
-                (title, source, version, filename, status) VALUES (%s, %s, %s, %s, 'draft') RETURNING id''',
-                (title, source, version, filename))).fetchone()
-            for chunk in make_chunks(row['id'], chunks):
-                await self.insert_chunk(conn, chunk)
-            return await self.document(conn, row['id'])
+            documents = []
+            for draft in drafts:
+                row = await (await conn.execute('''INSERT INTO knowledge_documents
+                    (title, source, version, filename, variant, comparison_id, status)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'draft') RETURNING id''',
+                    tuple(draft[key] for key in ('title', 'source', 'version', 'filename', 'variant', 'comparison_id')))).fetchone()
+                for chunk in make_chunks(row['id'], draft['chunks']):
+                    await self.insert_chunk(conn, chunk)
+                documents.append(await self.document(conn, row['id']))
+            return documents
 
     async def insert_chunk(self, conn, chunk):
         vector = json.dumps(chunk['embedding']) if chunk['embedding'] is not None else None
@@ -367,7 +420,7 @@ class PgKnowledgeBase(KnowledgeBase):
     async def list_documents(self):
         async with self.connection() as conn:
             rows = await (await conn.execute('''SELECT d.id, d.title, d.source, d.version, d.filename,
-                d.status, d.builtin, d.created_at, d.published_at, COUNT(c.id) AS chunk_count
+                d.status, d.builtin, d.variant, d.comparison_id, d.created_at, d.published_at, COUNT(c.id) AS chunk_count
                 FROM knowledge_documents d LEFT JOIN knowledge_chunks c ON c.document_id = d.id
                 GROUP BY d.id ORDER BY d.id''')).fetchall()
             for row in rows:
@@ -405,7 +458,8 @@ class PgKnowledgeBase(KnowledgeBase):
                     await conn.execute('UPDATE knowledge_chunks SET embedding = %s::vector WHERE id = %s',
                                        (json.dumps(vector) if vector is not None else None, chunk['id']))
                 await conn.execute("UPDATE knowledge_documents SET status = 'published', published_at = now() WHERE id = %s", (doc_id,))
-                await conn.execute("DELETE FROM knowledge_documents WHERE title = %s AND status = 'published' AND id <> %s", (document['title'], doc_id))
+                await conn.execute("DELETE FROM knowledge_documents WHERE title = %s AND variant = %s AND status = 'published' AND id <> %s",
+                                   (document['title'], document['variant'], doc_id))
                 return await self.document(conn, doc_id)
             except Exception:
                 raise KnowledgeError('发布失败，文档保持草稿。') from None
@@ -452,7 +506,7 @@ class PgKnowledgeBase(KnowledgeBase):
     async def published_rows(self, document_id=None):
         async with self.connection() as conn:
             rows = await (await conn.execute('''SELECT c.id, c.document_id, c.seq, c.page, c.heading, c.text,
-                c.embedding::text AS embedding, d.title AS document_title, d.source
+                c.embedding::text AS embedding, d.title AS document_title, d.source, d.variant, d.comparison_id
                 FROM knowledge_chunks c JOIN knowledge_documents d ON d.id = c.document_id
                 WHERE d.status = 'published' AND (%s::bigint IS NULL OR c.document_id = %s)
                 ORDER BY d.id, c.seq''', (document_id, document_id))).fetchall()

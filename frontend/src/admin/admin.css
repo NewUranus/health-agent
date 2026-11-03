@@ -38,9 +38,12 @@
 .admin-shell pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .admin-shell summary { cursor: pointer; color: #176b60; }
 .admin-pagination { justify-content: center; margin-top: 24px; }
+.admin-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.admin-comparison > section { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 10px; }
 @media (max-width: 760px) {
   .admin-shell { padding: 20px 14px 40px; }
   .admin-documents { grid-template-columns: 1fr; }
+  .admin-comparison { grid-template-columns: 1fr; }
   .admin-panel { padding: 18px; }
   .admin-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 14px; }
   .admin-header, .admin-row { flex-wrap: wrap; }

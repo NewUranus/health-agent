@@ -19,7 +19,7 @@ from app.agent import HealthAgent
 from app import clock
 from app.followup import plan_status
 from app.memory import load_followup, load_memory
-from app.ingest import IngestError, chunk_pages, parse_pdf
+from app.ingest import IngestError, chunk_pages, clean_pages, parse_pdf
 from app.knowledge import KnowledgeError
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -121,6 +121,7 @@ def create_app():
         return {"ok": True, "mock": mock}
 
     @application.post("/api/admin/documents", status_code=201)
+    @application.post("/api/admin/document-pairs", status_code=201)
     async def upload_document(request: Request):
         if not request.headers.get("content-type", "").lower().startswith("multipart/form-data"):
             raise HTTPException(400, "请使用文件上传表单。")
@@ -159,6 +160,14 @@ def create_app():
                 raise HTTPException(400, str(exc)) from None
             if not chunks:
                 raise HTTPException(400, "没有可用的文字片段。")
+            if request.url.path.endswith('/document-pairs'):
+                cleaned = await asyncio.to_thread(clean_pages, pages)
+                clean_chunks = await asyncio.to_thread(chunk_pages, cleaned)
+                if not clean_chunks:
+                    raise HTTPException(400, "清洗后没有可用的文字片段。")
+                documents = await application.state.agent.kb.create_comparison(
+                    title.strip(), source, version, chunks, clean_chunks, file.filename or '')
+                return {'documents': documents}
             return await application.state.agent.kb.create_draft(title.strip(), source, version, chunks, file.filename or "")
         finally:
             await form.close()
@@ -205,6 +214,11 @@ def create_app():
         hits = await kb.search(q, k, document_id=document_id)
         return {"results": [{key: getattr(chunk, key) for key in ("id", "title", "source", "page", "text", "score")} for chunk in hits],
                 "min_similarity": kb.min_similarity}
+
+    @application.get("/api/admin/compare")
+    async def compare(q: str = Query(min_length=1), document_id: int = Query(ge=1),
+                      k: int = Query(4, ge=1, le=200)):
+        return await application.state.agent.kb.compare(document_id, q, k)
 
     @application.post("/api/chat")
     async def chat(body: ChatRequest):

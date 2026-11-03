@@ -5,13 +5,19 @@ type Document = {
   id: number; title: string; source: string; version: string; filename: string;
   status: "draft" | "published"; builtin: boolean; chunk_count: number;
   created_at: string; published_at: string | null; chunks?: DraftChunk[];
+  variant?: "standard" | "raw" | "clean"; comparison_id?: string;
 };
 type DraftChunk = { id: string; seq: number; page: number | null; heading: string; text: string };
 type VectorRow = DraftChunk & {
   document_id: number; document_title: string; source: string;
   dimension: number | null; vector_preview: number[] | null;
+  variant?: Document["variant"];
 };
 type SearchRow = { id: string; title: string; source: string; page: number | null; text: string; score: number };
+type Comparison = {
+  groups: { document_id: number; title: string; variant: Document["variant"]; results: SearchRow[] }[];
+  mode: "vector" | "bm25"; min_similarity: number;
+};
 type Stats = {
   backend: string; embedding_model: string | null; dimension: number | null;
   documents: number; published_documents: number; draft_documents: number;
@@ -31,6 +37,13 @@ function storePassword(password: string) {
 }
 function pageLabel(page: number | null | undefined) {
   return page != null ? `第 ${page} 页` : "";
+}
+function variantLabel(variant: Document["variant"]) {
+  return variant === "raw" ? "原始版" : variant === "clean" ? "清洗版" : "";
+}
+function documentLabel(document: Document) {
+  const variant = variantLabel(document.variant);
+  return document.title + (variant ? ` · ${variant}` : "");
 }
 
 export default function AdminApp() {
@@ -120,6 +133,8 @@ function Documents({ api, documents, refresh, reportError, clearError }: Section
   const [publishing, setPublishing] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
   const [dirty, setDirty] = useState<Set<string>>(new Set());
+  const [paired, setPaired] = useState(false);
+  const [uploadNotice, setUploadNotice] = useState("");
 
   async function perform(action: () => Promise<void>) {
     clearError(); setBusy(true);
@@ -138,7 +153,15 @@ function Documents({ api, documents, refresh, reportError, clearError }: Section
       reportError(new Error("文件超过 20MB，请拆分后上传。")); return;
     }
     await perform(async () => {
-      const document = await api<Document>("/documents", { method: "POST", body: data });
+      setUploadNotice("");
+      let document: Document;
+      if (paired) {
+        const result = await api<{ documents: Document[] }>("/document-pairs", { method: "POST", body: data });
+        document = result.documents[0];
+        setUploadNotice("已生成原始版和清洗版两份草稿。请分别核对、发布，两套向量会保存在同一个库中。");
+      } else {
+        document = await api<Document>("/documents", { method: "POST", body: data });
+      }
       select(document); form.reset(); setFile(null); await refresh();
     });
   }
@@ -171,13 +194,19 @@ function Documents({ api, documents, refresh, reportError, clearError }: Section
         <label>标题<input name="title" required /></label>
         <label>来源<input name="source" /></label>
         <label>版本<input name="version" /></label>
+        <label>导入方式<select value={paired ? "paired" : "single"} disabled={busy} onChange={e => setPaired(e.target.value === "paired")}>
+          <option value="single">普通导入</option>
+          <option value="paired">同时生成原始版与清洗版</option>
+        </select></label>
+        {paired && <p className="admin-muted">同一 PDF 解析一次，按相同的 500 字符上限切块。原始版沿用现有处理，清洗版额外修复列表符号与常见排版断行。</p>}
         <button className="admin-primary" disabled={busy}>上传并解析</button>
       </form>
+      {uploadNotice && <p role="status" className="admin-review">{uploadNotice}</p>}
       <h2>文档列表</h2>
       {!documents.length && <p className="admin-muted">暂无文档，请上传 PDF。</p>}
       <ul className="admin-list">{documents.map(document => <li key={document.id}>
         <div className="admin-row">
-          <button className="admin-link" disabled={busy} onClick={() => void perform(async () => select(await api<Document>(`/documents/${document.id}`)))}>{document.title}</button>
+          <button className="admin-link" disabled={busy} onClick={() => void perform(async () => select(await api<Document>(`/documents/${document.id}`)))}>{documentLabel(document)}</button>
           <span className="admin-badge">{document.builtin ? "内置" : document.status === "draft" ? "草稿" : "已发布"}</span>
         </div>
         <p className="admin-muted">{document.chunk_count} 块{document.version && ` · ${document.version}`}</p>
@@ -193,7 +222,7 @@ function Documents({ api, documents, refresh, reportError, clearError }: Section
     </div>
     <div className="admin-panel admin-detail">
       {!selected ? <div className="admin-empty"><h2>检查文档内容</h2><p>上传或选择一份文档，查看片段与页码。</p></div> : <>
-        <div className="admin-row"><h2>{selected.title}</h2><button disabled={busy} onClick={() => setSelected(null)}>关闭详情</button></div>
+        <div className="admin-row"><h2>{documentLabel(selected)}</h2><button disabled={busy} onClick={() => setSelected(null)}>关闭详情</button></div>
         <p className="admin-muted">{selected.source} {selected.version}</p>
         {selected.status === "draft" ? <div className="admin-review">
           <p>请核对表格和数字后再发布</p>
@@ -257,13 +286,13 @@ function VectorLibrary({ api, documents, reportError }: SectionProps & { documen
       <label>片段文本搜索<input type="search" value={input} onChange={e => setInput(e.target.value)} placeholder="输入文本关键词" /></label>
       <label>文档筛选<select value={documentId} onChange={e => { setDocumentId(e.target.value); setOffset(0); }}>
         <option value="">全部已发布文档</option>
-        {documents.filter(d => d.status === "published").map(d => <option key={d.id} value={d.id}>{d.title}</option>)}
+        {documents.filter(d => d.status === "published").map(d => <option key={d.id} value={d.id}>{documentLabel(d)}</option>)}
       </select></label><button>搜索</button>
     </form>
     {loading && <p role="status">正在加载…</p>}
     <ul className="admin-list">{data.chunks.map(row => <li key={row.id}>
       <div className="admin-row"><strong>{row.id}</strong><span>{row.dimension != null ? `${row.dimension} 维` : "无向量"}</span></div>
-      <h3>{row.document_title}</h3><p className="admin-muted">{row.source} {pageLabel(row.page)}</p>
+      <h3>{row.document_title}{variantLabel(row.variant) && ` · ${variantLabel(row.variant)}`}</h3><p className="admin-muted">{row.source} {pageLabel(row.page)}</p>
       <p className="admin-text">{row.text}</p>
       {row.vector_preview && <details><summary>向量预览（前 8 维）</summary><pre>{row.vector_preview.map(n => n.toFixed(4)).join(", ")}</pre></details>}
     </li>)}</ul>
@@ -277,22 +306,30 @@ function SearchTest({ api, documents, reportError, clearError }: SectionProps & 
   const [query, setQuery] = useState("");
   const [documentId, setDocumentId] = useState("");
   const [result, setResult] = useState<{ results: SearchRow[]; min_similarity: number } | null>(null);
+  const [comparison, setComparison] = useState<Comparison | null>(null);
   const [busy, setBusy] = useState(false);
   const request = useRef<AbortController | null>(null);
   const published = documents.filter(document => document.status === "published");
   const selected = published.find(document => String(document.id) === documentId);
+  const pairReady = !!selected?.comparison_id && published.some(document =>
+    document.id !== selected.id && document.comparison_id === selected.comparison_id && document.variant !== selected.variant);
   useEffect(() => () => request.current?.abort(), []);
-  async function search(event: FormEvent) {
-    event.preventDefault();
+  async function search(event?: FormEvent, compare = false) {
+    event?.preventDefault();
     if (request.current || !query.trim()) return;
     const controller = new AbortController();
     request.current = controller;
-    clearError(); setBusy(true); setResult(null);
+    clearError(); setBusy(true); setResult(null); setComparison(null);
     const params = new URLSearchParams({ q: query.trim(), k: "4" });
     if (documentId) params.set("document_id", documentId);
     try {
-      const value = await api<NonNullable<typeof result>>(`/search?${params}`, { signal: controller.signal });
-      if (!controller.signal.aborted) setResult(value);
+      if (compare) {
+        const value = await api<Comparison>(`/compare?${params}`, { signal: controller.signal });
+        if (!controller.signal.aborted) setComparison(value);
+      } else {
+        const value = await api<NonNullable<typeof result>>(`/search?${params}`, { signal: controller.signal });
+        if (!controller.signal.aborted) setResult(value);
+      }
     } catch (reason) {
       if (!controller.signal.aborted) reportError(reason);
     } finally {
@@ -303,24 +340,39 @@ function SearchTest({ api, documents, reportError, clearError }: SectionProps & 
   return <div className="admin-panel">
     <h2>检索测试</h2><p className="admin-muted">使用与问答相同的检索逻辑，可选择一份已发布 PDF，仅查看该文档中的搜索结果。</p>
     <form className="admin-filters" onSubmit={event => void search(event)}>
-      <label>输入问题<input type="search" value={query} disabled={busy} onChange={e => { setQuery(e.target.value); setResult(null); }} required /></label>
-      <label>检索范围<select value={documentId} disabled={busy} onChange={e => { setDocumentId(e.target.value); setResult(null); clearError(); }}>
+      <label>输入问题<input type="search" value={query} disabled={busy} onChange={e => { setQuery(e.target.value); setResult(null); setComparison(null); }} required /></label>
+      <label>检索范围<select value={documentId} disabled={busy} onChange={e => { setDocumentId(e.target.value); setResult(null); setComparison(null); clearError(); }}>
         <option value="">全部已发布文档</option>
         <optgroup label="已发布 PDF">{published.filter(document => !document.builtin).map(document =>
-          <option key={document.id} value={document.id}>{document.title}{document.version && ` · ${document.version}`}（{document.filename}）</option>)}</optgroup>
+          <option key={document.id} value={document.id}>{documentLabel(document)}{document.version && ` · ${document.version}`}（{document.filename}）</option>)}</optgroup>
         <optgroup label="内置资料">{published.filter(document => document.builtin).map(document =>
           <option key={document.id} value={document.id}>{document.title}</option>)}</optgroup>
       </select></label>
       <button className="admin-primary" disabled={busy || !query.trim()}>{busy ? "检索中…" : "检索"}</button>
+      {selected?.comparison_id && <button type="button" disabled={busy || !query.trim() || !pairReady}
+        onClick={() => void search(undefined, true)}>对比两版</button>}
     </form>
+    {selected?.comparison_id && !pairReady && <p className="admin-muted">同次上传的原始版和清洗版都发布后，即可并排对比。</p>}
     {result && <>
-      <p>检索范围：{selected ? selected.title : "全部已发布文档"}</p>
+      <p>检索范围：{selected ? documentLabel(selected) : "全部已发布文档"}</p>
       <p>向量相似度门槛：{result.min_similarity}（BM25 回退时不使用门槛）</p>
       {!result.results.length && <p className="admin-review">{documentId ? "所选文档中没有符合检索条件的结果，可尝试其他问题或切换到全部文档。" : "没有达到门槛的结果，问答会拒答"}</p>}
       <ul className="admin-list">{result.results.map(row => <li key={row.id}>
         <div className="admin-row"><strong>{row.title}</strong><span>相似度 / BM25 分：{row.score.toFixed(3)}</span></div>
         <p className="admin-muted">{row.id} · {row.source} {pageLabel(row.page)}</p><p className="admin-text">{row.text}</p>
       </li>)}</ul>
+    </>}
+    {comparison && <>
+      <p>检索方式：{comparison.mode === "vector" ? `向量相似度（两版门槛均为 ${comparison.min_similarity}）` : "BM25（两版均未使用向量检索，不使用相似度门槛）"}</p>
+      <div className="admin-comparison">{comparison.groups.map(group => <section key={group.document_id} aria-label={variantLabel(group.variant)}>
+        <h3>{variantLabel(group.variant)} · {group.title}</h3>
+        {!group.results.length && <p>没有符合条件的结果。</p>}
+        <ol className="admin-list">{group.results.map((row, index) => <li key={row.id}>
+          <div className="admin-row"><strong>第 {index + 1} 条</strong><span>{comparison.mode === "vector" ? "相似度" : "BM25 分"}：{row.score.toFixed(3)}</span></div>
+          <p className="admin-muted">{row.id} · {row.source} {pageLabel(row.page)}</p>
+          <p className="admin-text">{row.text}</p>
+        </li>)}</ol>
+      </section>)}</div>
     </>}
   </div>;
 }
