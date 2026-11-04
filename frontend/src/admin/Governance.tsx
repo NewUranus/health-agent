@@ -47,7 +47,7 @@ export function ModelUsage({ api }: { api: AdminApi }) {
     return () => controller.abort();
   }, [api, refresh]);
   return <section className="admin-panel"><h2>最近七天模型用量</h2>
-    <p>按模型和场景汇总调用。Token 由提供商返回；缺失值不当作零。配置价格表后显示美元估算，未定价调用不计入金额；以提供商账单为准。模拟模式和向量模型不计入。</p>
+    <p>按模型和场景汇总调用。Token 由提供商返回；缺失值不当作零。未接入价格表时无法估算费用；配置价格表后显示美元估算，未定价调用不计入金额；以提供商账单为准。模拟模式和向量模型不计入。</p>
     <button onClick={() => setRefresh(value => value + 1)}>刷新模型用量</button>
     {error && <p role="alert">{error}</p>}
     {!groups && !error && <p role="status">正在读取…</p>}
