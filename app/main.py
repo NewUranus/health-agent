@@ -1,16 +1,15 @@
 """FastAPI 应用、SSE 会话与可导入外部平台的工具接口。"""
 import asyncio
-import hmac
 import json
 import os
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request, Query
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Query
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.formparsers import MultiPartException, MultiPartParser
@@ -21,8 +20,22 @@ from app.followup import plan_status
 from app.memory import load_followup, load_memory
 from app.ingest import IngestError, chunk_pages, clean_pages, parse_pdf
 from app.knowledge import KnowledgeError
+from app.auth import AuthStore, COOKIE_NAME
+from app.http_security import attach_security, auth_required, current_identity, error_response, ErrorInfo
 
 ROOT = Path(__file__).resolve().parent.parent
+API_VERSION = "v1"
+API_PREFIX = "/api/v1"
+
+
+def v1_resource_path(path: str) -> str | None:
+    """将 V1 正式路径和兼容路径映射为相同资源，未知版本不映射。"""
+    for prefix in (API_PREFIX, "/api"):
+        if path.startswith(prefix + "/"):
+            resource = path[len(prefix):]
+            if resource.split("/", 2)[1] in {"health", "chat", "history", "followup", "tools", "admin", "auth"}:
+                return resource
+    return None
 
 
 class MemoryPDFParser(MultiPartParser):
@@ -38,6 +51,7 @@ class ChatRequest(BaseModel):
     thread_id: str = Field(min_length=1, max_length=128)
     user_id: str | None = Field(default=None, min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=12000)
+    web_search: bool = False
 
 
 class ToolRequest(BaseModel):
@@ -78,37 +92,42 @@ class TrajectoryRequest(RiskRequest):
 def create_app():
     load_dotenv(ROOT / ".env")
     mock = os.getenv("HEALTH_AGENT_MOCK") == "1"
+    required = auth_required(mock)
 
     @asynccontextmanager
     async def lifespan(application):
+        if required:
+            application.state.auth_store = await asyncio.to_thread(AuthStore)
+            await asyncio.to_thread(application.state.auth_store.setup)
+            application.state.login_slots = asyncio.Semaphore(2)
         async with HealthAgent(mock=mock) as agent:
             application.state.agent = agent
             yield
 
-    application = FastAPI(title="HealthPilot 健康工具", description="心血管健康评估技术演示，不构成医疗建议。", lifespan=lifespan)
+    application = FastAPI(
+        title="HealthPilot API V1", version="1.0.0",
+        description="心血管健康评估技术演示，不构成医疗建议。正式入口为 /api/v1；/api 是固定指向 V1 的兼容入口。当前 Agent 版本为 v1。",
+        lifespan=lifespan,
+    )
+    application.state.auth_required = required
+    application.state.auth_store = None
+    api_v1 = APIRouter(responses={status: {"model": ErrorInfo} for status in (400, 401, 403, 404, 409, 422, 429, 500, 503)})
     application.mount("/static", StaticFiles(directory=ROOT / "web"), name="static")
-
-    @application.middleware("http")
-    async def admin_auth(request: Request, call_next):
-        if request.url.path.startswith("/api/admin/"):
-            # 没配置 ADMIN_PASSWORD 时后台免登录，配置后才校验
-            password = os.getenv("ADMIN_PASSWORD")
-            authorization = request.headers.get("authorization", "")
-            if password and not hmac.compare_digest(authorization.encode(), ("Bearer " + password).encode()):
-                return JSONResponse(status_code=401, content={"detail": "密码错误"})
-        return await call_next(request)
+    attach_security(application, api_v1, v1_resource_path,
+                    {"X-API-Version": API_VERSION, "X-Agent-Version": HealthAgent.version})
 
     @application.exception_handler(KnowledgeError)
     async def knowledge_error(request: Request, exc):
         status = 404 if str(exc) in ("文档不存在。", "片段不存在。") else 409
         if status != 404 and request.url.path.endswith("/publish"):
             status = 502
-        return JSONResponse(status_code=status, content={"detail": str(exc)})
+        return error_response(request, status, str(exc))
 
     @application.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc):
-        status = 400 if request.url.path.startswith("/api/tools/") else 422
-        return JSONResponse(status_code=status, content={"detail": "参数格式或范围无效，请按照接口说明填写。"})
+        resource = v1_resource_path(request.url.path)
+        status = 400 if resource and resource.startswith("/tools/") else 422
+        return error_response(request, status, "参数格式或范围无效，请按照接口说明填写。")
 
     @application.get("/admin", include_in_schema=False)
     @application.get("/", include_in_schema=False)
@@ -116,12 +135,12 @@ def create_app():
         # 首页每次都向服务器确认版本；assets 的文件名带哈希，可以放心缓存
         return FileResponse(ROOT / "web" / "index.html", headers={"Cache-Control": "no-cache"})
 
-    @application.get("/api/health")
+    @api_v1.get("/health")
     async def health():
         return {"ok": True, "mock": mock}
 
-    @application.post("/api/admin/documents", status_code=201)
-    @application.post("/api/admin/document-pairs", status_code=201)
+    @api_v1.post("/admin/documents", status_code=201)
+    @api_v1.post("/admin/document-pairs", status_code=201)
     async def upload_document(request: Request):
         if not request.headers.get("content-type", "").lower().startswith("multipart/form-data"):
             raise HTTPException(400, "请使用文件上传表单。")
@@ -172,68 +191,92 @@ def create_app():
         finally:
             await form.close()
 
-    @application.get("/api/admin/documents")
+    @api_v1.get("/admin/documents")
     async def documents():
         return {"documents": await application.state.agent.kb.list_documents()}
 
-    @application.get("/api/admin/documents/{doc_id}")
+    @api_v1.get("/admin/documents/{doc_id}")
     async def document(doc_id: int):
         return await application.state.agent.kb.get_document(doc_id)
 
-    @application.patch("/api/admin/documents/{doc_id}/chunks/{chunk_id}")
+    @api_v1.patch("/admin/documents/{doc_id}/chunks/{chunk_id}")
     async def update_chunk(doc_id: int, chunk_id: str, body: ChunkUpdate):
         if not body.text.strip():
             raise HTTPException(400, "片段文本不能为空。")
         return await application.state.agent.kb.update_chunk(doc_id, chunk_id, body.text)
 
-    @application.delete("/api/admin/documents/{doc_id}/chunks/{chunk_id}")
+    @api_v1.delete("/admin/documents/{doc_id}/chunks/{chunk_id}")
     async def delete_chunk(doc_id: int, chunk_id: str):
         return await application.state.agent.kb.delete_chunk(doc_id, chunk_id)
 
-    @application.post("/api/admin/documents/{doc_id}/publish")
+    @api_v1.post("/admin/documents/{doc_id}/publish")
     async def publish(doc_id: int):
         return await application.state.agent.kb.publish(doc_id)
 
-    @application.delete("/api/admin/documents/{doc_id}")
+    @api_v1.delete("/admin/documents/{doc_id}")
     async def delete_document(doc_id: int):
         await application.state.agent.kb.delete_document(doc_id)
         return {"ok": True}
 
-    @application.get("/api/admin/stats")
+    @api_v1.get("/admin/stats")
     async def stats():
         return await application.state.agent.kb.stats()
 
-    @application.get("/api/admin/chunks")
+    @api_v1.get("/admin/chunks")
     async def chunks(document_id: int | None = None, q: str | None = None,
                      limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
         return await application.state.agent.kb.list_chunks(document_id, q, limit, offset)
 
-    @application.get("/api/admin/search")
+    @api_v1.get("/admin/search")
     async def search(q: str, k: int = Query(4, ge=1, le=200), document_id: int | None = Query(None, ge=1)):
         kb = application.state.agent.kb
         hits = await kb.search(q, k, document_id=document_id)
         return {"results": [{key: getattr(chunk, key) for key in ("id", "title", "source", "page", "text", "score")} for chunk in hits],
                 "min_similarity": kb.min_similarity}
 
-    @application.get("/api/admin/compare")
+    @api_v1.get("/admin/compare")
     async def compare(q: str = Query(min_length=1), document_id: int = Query(ge=1),
                       k: int = Query(4, ge=1, le=200)):
         return await application.state.agent.kb.compare(document_id, q, k)
 
-    @application.post("/api/chat")
-    async def chat(body: ChatRequest):
+    @api_v1.post("/chat")
+    async def chat(request: Request, body: ChatRequest):
+        user_id = current_identity(request, body.user_id, body.thread_id)
+        thread_id = body.thread_id
+        if required:
+            thread_id = await asyncio.to_thread(application.state.auth_store.claim_thread, thread_id, request.state.user["id"])
         async def events():
-            async for event in application.state.agent.stream(body.thread_id, body.message, body.user_id):
-                yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+            options = {"web_search": True} if body.web_search else {}
+            outcome = "chat.interrupted"
+            try:
+                async with aclosing(application.state.agent.stream(thread_id, body.message, user_id, **options)) as stream:
+                    async for event in stream:
+                        if required and not await asyncio.to_thread(application.state.auth_store.resolve, request.cookies.get(COOKIE_NAME)):
+                            yield "data: " + json.dumps({"type": "error", "message": "登录已失效，请重新登录。", "code": "AUTH_REQUIRED", "request_id": request.state.request_id}, ensure_ascii=False) + "\n\n"
+                            yield 'data: {"type":"done"}\n\n'
+                            break
+                        if event["type"] == "error":
+                            outcome = "chat.failed"
+                            event = {**event, "code": "AGENT_EXECUTION_FAILED", "request_id": request.state.request_id,
+                                     "retryable": False, "next_action": "检查输入；重新执行前请先核对随访记录。"}
+                        if event["type"] == "done" and outcome != "chat.failed":
+                            outcome = "chat.completed"
+                        yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+            finally:
+                if required:
+                    await asyncio.to_thread(application.state.auth_store.audit, request.state.user["id"], outcome,
+                                            thread_id, request.state.request_id, 200 if outcome == "chat.completed" else 409)
         return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
-    @application.get("/api/history")
-    async def history(user_id: str):
+    @api_v1.get("/history")
+    async def history(request: Request, user_id: str | None = None):
+        user_id = current_identity(request, user_id)
         _, records = await load_memory(application.state.agent.store, user_id)
         return {"records": records}
 
-    @application.get("/api/followup")
-    async def followup(user_id: str):
+    @api_v1.get("/followup")
+    async def followup(request: Request, user_id: str | None = None):
+        user_id = current_identity(request, user_id)
         store = application.state.agent.store
         status = plan_status(await load_followup(store, user_id), clock.today())
         _, history = await load_memory(store, user_id)
@@ -249,26 +292,29 @@ def create_app():
         except Exception:
             raise HTTPException(status_code=503, detail="健康工具暂不可用，请稍后重试。") from None
 
-    @application.post("/api/tools/cvd_risk", summary="计算十年心血管病风险")
+    @api_v1.post("/tools/cvd_risk", summary="计算十年心血管病风险")
     async def cvd_risk(body: RiskRequest):
         return await forward("cvd_risk", body)
 
-    @application.post("/api/tools/bmi", summary="计算中国标准 BMI")
+    @api_v1.post("/tools/bmi", summary="计算中国标准 BMI")
     async def bmi(body: BMIRequest):
         return await forward("bmi", body)
 
-    @application.post("/api/tools/bp_category", summary="血压水平分级")
+    @api_v1.post("/tools/bp_category", summary="血压水平分级")
     async def bp_category(body: BPRequest):
         return await forward("bp_category", body)
 
-    @application.post("/api/tools/simulate_intervention", summary="模拟干预后的风险")
+    @api_v1.post("/tools/simulate_intervention", summary="模拟干预后的风险")
     async def simulate_intervention(body: SimulationRequest):
         return await forward("simulate_intervention", body)
 
-    @application.post("/api/tools/project_trajectory", summary="推演健康风险轨迹")
+    @api_v1.post("/tools/project_trajectory", summary="推演健康风险轨迹")
     async def project_trajectory(body: TrajectoryRequest):
         return await forward("project_trajectory", body)
 
+    # 两个入口注册同一套处理函数，不重定向 POST 或 SSE，也不维护重复逻辑。
+    application.include_router(api_v1, prefix=API_PREFIX, tags=["V1"])
+    application.include_router(api_v1, prefix="/api", tags=["V1 兼容入口"])
     return application
 
 

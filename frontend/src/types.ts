@@ -30,6 +30,9 @@ export interface Source {
   source: string;
   score: number;
   page?: number | null;
+  url?: string;
+  origin?: string;
+  fetched_at?: string;
 }
 
 export interface ToolCall {
@@ -64,6 +67,12 @@ export interface NodeData extends Record<string, unknown> {
   adherence?: string;
   due_date?: string;
   cancelled?: boolean;
+  web_search?: boolean;
+  web_failed?: boolean;
+  web_read_count?: number;
+  web_sources_only?: boolean;
+  web_results?: { title: string; url: string }[];
+  web_errors?: string[];
 }
 
 export interface NodeEvent {
@@ -77,7 +86,7 @@ export interface NodeEvent {
 export type ServerEvent =
   | NodeEvent
   | { type: "message"; content: string }
-  | { type: "error"; message: string }
+  | { type: "error"; message: string; code?: string; request_id?: string; retryable?: boolean; next_action?: string }
   | { type: "done" };
 
 export interface Message {

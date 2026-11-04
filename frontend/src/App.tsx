@@ -1,4 +1,6 @@
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useContext, useEffect, useReducer, useRef, useState } from "react";
+import { AuthContext } from "./auth/AuthGate";
+import { apiFetch, sessionExpired } from "./lib/api";
 import { HealthOverview } from "./components/HealthOverview";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { MessageContent } from "./components/MessageContent";
@@ -15,9 +17,11 @@ const examples = [
 ];
 
 export default function App() {
-  const [session, dispatch] = useReducer(sessionReducer, undefined, initialSession);
+  const auth = useContext(AuthContext);
+  const [session, dispatch] = useReducer(sessionReducer, undefined, () => initialSession(auth.user?.id));
   const [mode, setMode] = useState("正在连接");
   const [input, setInput] = useState("");
+  const [webSearch, setWebSearch] = useState(false);
   const [traceVisible, setTraceVisible] = useState(true);
   const [panelTab, setPanelTab] = useState<"trace" | "simulate" | "history">("trace");
   const [highlighted, setHighlighted] = useState<string | null>(null);
@@ -30,7 +34,7 @@ export default function App() {
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch("/api/health", { signal: controller.signal })
+    apiFetch("/api/health", { signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error();
         return response.json();
@@ -46,7 +50,7 @@ export default function App() {
   useEffect(() => {
     if (session.busy) return;
     const controller = new AbortController();
-    fetch(`/api/followup?user_id=${encodeURIComponent(session.userId)}`, { signal: controller.signal })
+    apiFetch(`/api/followup?user_id=${encodeURIComponent(session.userId)}`, { signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error();
         return response.json();
@@ -75,18 +79,26 @@ export default function App() {
     let status = "连接未完成";
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
-      const response = await fetch("/api/chat", {
+      const response = await apiFetch("/api/chat", {
         method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
-        body: JSON.stringify({ thread_id: session.threadId, user_id: session.userId, message: text }),
+        body: JSON.stringify({ thread_id: session.threadId, user_id: session.userId, message: text, ...(webSearch ? { web_search: true } : {}) }),
       });
-      if (!response.ok || !response.body) throw new Error("连接暂不可用，请稍后重试。");
+      if (!response.ok || !response.body) {
+        const problem = await response.json().catch(() => ({}));
+        throw new Error(typeof problem.detail === "string"
+          ? `连接请求未完成：${problem.detail}${problem.next_action ? ` ${problem.next_action}` : ""}${problem.request_id ? `（请求编号：${problem.request_id}）` : ""}`
+          : "连接暂不可用，请稍后重试。");
+      }
       reader = response.body.getReader();
       const decoder = new TextDecoder();
       const parser = createSseParser((event) => {
         if (controller.signal.aborted) return;
         if (event.type === "done") gotDone = true;
         if (event.type === "message") gotMessage = true;
-        if (event.type === "error") gotError = true;
+        if (event.type === "error") {
+          gotError = true;
+          if ("code" in event && event.code === "AUTH_REQUIRED") sessionExpired();
+        }
         dispatch({ type: "event", event });
       });
       while (true) {
@@ -121,6 +133,7 @@ export default function App() {
 
   function reset(clearIdentity = false) {
     if (activeRequest.current || session.busy) return;
+    setWebSearch(false);
     const userId = clearIdentity ? createId() : undefined;
     if (userId) saveUserId(userId);
     dispatch({ type: "reset", threadId: createId(), userId });
@@ -148,7 +161,9 @@ export default function App() {
       <div className="header-actions">
         <span className="mode">{mode}</span>
         <button type="button" className="quiet" disabled={session.busy} onClick={() => reset()}>新会话 <span aria-hidden="true">＋</span></button>
-        <button type="button" className="quiet" disabled={session.busy} onClick={() => reset(true)}>清除身份</button>
+        {auth.user ? <><span className="account-name">{auth.user.username}</span>
+          <button type="button" className="quiet" disabled={auth.busy} onClick={auth.logout}>{auth.busy ? "正在退出…" : "退出登录"}</button></>
+          : <button type="button" className="quiet" disabled={session.busy} onClick={() => reset(true)}>清除身份</button>}
       </div>
     </header>
     <main>
@@ -176,13 +191,18 @@ export default function App() {
             </div>)}
           </div>
           <div className="composer-wrap">
+            <label className="web-search-toggle">
+              <input type="checkbox" checked={webSearch} disabled={session.busy} onChange={(event) => setWebSearch(event.target.checked)} />
+              联网搜索 / 读取链接
+            </label>
+            {webSearch && <p className="web-search-note">本轮问题会发送给公开搜索网站；粘贴网址可直接读取。请勿填写个人身份信息。网络资料未经医学审核。</p>}
             <div className="examples" aria-label="试试这些示例">
               {examples.map(([label, text]) => <button type="button" key={label} disabled={session.busy} onClick={() => void send(text)}>{label}</button>)}
             </div>
             <form id="chat-form" onSubmit={(event) => { event.preventDefault(); void send(input); }}>
               <label htmlFor="message-input" className="sr-only">输入健康信息或问题</label>
               <textarea id="message-input" ref={textarea} rows={2} maxLength={12000} required
-                placeholder="告诉我你的健康情况，或问一个健康问题…" value={input}
+                placeholder={webSearch ? "输入要搜索的健康主题，或粘贴公开网页 / PDF 链接…" : "告诉我你的健康情况，或问一个健康问题…"} value={input}
                 onChange={(event) => setInput(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {

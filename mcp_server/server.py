@@ -1,8 +1,11 @@
-"""通过标准输入输出暴露五个确定性健康工具。"""
+"""通过标准输入输出暴露确定性健康工具和公开网页工具。"""
 from mcp.server.mcpserver import MCPServer
 from app import tools_core
+from app.web_tools import search_web, read_web_document
 
 server = MCPServer("health-tools", log_level="WARNING")
+server.tool(name="search_web", description="无需密钥地搜索公开网页，返回标题和链接，搜索结果未经医学审核。")(search_web)
+server.tool(name="read_web_document", description="读取公开网页或文字版 PDF，返回原文、来源和获取时间，拒绝内网地址。")(read_web_document)
 server.tool(name="cvd_risk", description="计算 Framingham 一般心血管病十年风险，适用于 30–74 岁。文字结果不能替代医生诊断。")(tools_core.framingham_cvd_risk)
 server.tool(name="bmi", description="按中国成人标准计算体重指数与分级。")(tools_core.bmi)
 server.tool(name="bp_category", description="按中国高血压指南给出血压水平分级。")(tools_core.bp_category)

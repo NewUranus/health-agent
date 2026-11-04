@@ -5,6 +5,7 @@ export const profileLabels: Record<string, string> = {
 };
 
 export const nodeLabels: Record<string, string> = {
+  web_retrieve: "搜索与读取网页",
   safety_check: "急症筛查", emergency: "紧急就医指引", intake: "整理健康档案",
   supervisor: "规划下一步", ask_missing: "补充问诊", risk_assess: "计算健康风险",
   retrieve: "检索指南依据", advise: "生成干预建议", verify: "校验建议与引用",

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiFetch } from "../lib/api";
 import { formatPercent, formatPoints } from "../lib/format";
 import type { Profile } from "../types";
 
@@ -33,7 +34,7 @@ function SimulationForm({ profile }: { profile: Profile }) {
   useEffect(() => {
     const controller = new AbortController();
     const timer = setTimeout(() => {
-      fetch("/api/tools/simulate_intervention", {
+      apiFetch("/api/tools/simulate_intervention", {
         method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
         body: JSON.stringify({
           sex: profile.sex, age: profile.age, total_chol_mmol: chol, hdl_mmol: profile.hdl, sbp,

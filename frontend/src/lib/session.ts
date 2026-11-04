@@ -40,8 +40,8 @@ export type SessionAction =
   | { type: "followup"; value: FollowupStatus; threadId: string; userId: string }
   | { type: "reset"; threadId: string; userId?: string };
 
-export function initialSession(): Session {
-  return freshSession(createId(), loadUserId());
+export function initialSession(userId?: string): Session {
+  return freshSession(createId(), userId ?? loadUserId());
 }
 
 function freshSession(threadId: string, userId: string): Session {
@@ -82,7 +82,8 @@ export function sessionReducer(state: Session, action: SessionAction): Session {
       const event = action.event;
       if (event.type === "done") return state;
       if (event.type === "message" || event.type === "error") {
-        const text = event.type === "message" ? event.content : event.message;
+        const text = event.type === "message" ? event.content
+          : `${event.message}${event.next_action ? `\n${event.next_action}` : ""}${event.request_id ? `\n请求编号：${event.request_id}` : ""}`;
         const citations = new Map(state.citations);
         // 来源按轮次隔离，编号在整个会话内按首次出现递增。
         for (const match of text.matchAll(/\[cite:([\w-]+)\]/g)) {

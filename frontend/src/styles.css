@@ -1187,3 +1187,21 @@ html {
   font-size: 11px;
   color: var(--muted);
 }
+.web-search-toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 8px; cursor: pointer; }
+.web-search-toggle input { width: 16px; height: 16px; accent-color: #416653; }
+.web-search-note { margin: 0 0 10px; font-size: 12px; color: #6b746e; line-height: 1.6; }
+
+/* 登录页面沿用健康助手的浅色布局，窄屏保持单列。 */
+.auth-shell { min-height: 100dvh; display: grid; place-items: center; padding: 24px; }
+.auth-card { width: min(100%, 440px); background: #fff; border: 1px solid #dce6df; border-radius: 20px; padding: 32px; box-shadow: 0 12px 40px #234e3510; }
+.auth-card h1 { font-size: 26px; margin: 24px 0 12px; }
+.auth-card p { color: #62766b; line-height: 1.7; }
+.auth-card form { display: grid; gap: 12px; margin: 24px 0; }
+.auth-card input { width: 100%; min-width: 0; box-sizing: border-box; padding: 12px; border: 1px solid #bccdc3; border-radius: 8px; font: inherit; }
+.auth-card button { padding: 12px 20px; border: 0; border-radius: 8px; background: #245d48; color: white; cursor: pointer; font: inherit; }
+.auth-card button:disabled { opacity: .65; cursor: wait; }
+.auth-card .auth-error, .auth-error { color: #953e31; padding: 12px; background: #fff0ec; border-radius: 8px; }
+.auth-note { font-size: 12px; }
+.account-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.demo-notice { background: #f8f1db; color: #715b28; padding: 5px 16px; text-align: center; font-size: 12px; }
+@media (max-width: 600px) { .auth-card { padding: 24px; } .account-name { max-width: 75px; } }

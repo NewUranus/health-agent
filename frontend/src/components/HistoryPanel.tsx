@@ -1,4 +1,5 @@
 import { useEffect, useState, type CSSProperties } from "react";
+import { apiFetch } from "../lib/api";
 import { formatPercent } from "../lib/format";
 import { adherenceLabels } from "../lib/labels";
 import type { FollowupStatus, HistoryRecord } from "../types";
@@ -79,7 +80,7 @@ export function HistoryPanel({ userId, refreshKey, followup }: { userId: string;
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch(`/api/history?user_id=${encodeURIComponent(userId)}`, { signal: controller.signal })
+    apiFetch(`/api/history?user_id=${encodeURIComponent(userId)}`, { signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error();
         return response.json();

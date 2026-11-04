@@ -16,6 +16,8 @@ const labels: Record<string, string> = {
 
 export function progressLabel(node: string | null, data?: Record<string, unknown>): string {
   if (node === null) return "正在连接健康助手…";
+  if (node === "supervisor" && data?.web_search) return "正在搜索并读取公开网页，可能需要约一分钟…";
+  if (node === "web_retrieve") return "正在根据取得的资料整理回答…";
   if (node === "supervisor") return routes[String(data?.route)] ?? "正在处理…";
   if (node === "verify") {
     return data?.ok === false ? "引用校验未通过，正在重新生成…" : "正在制定随访计划…";

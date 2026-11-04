@@ -18,6 +18,7 @@ from app.mcp_client import MCPClient
 from app.memory import memory_backend
 from app.rag import Retriever
 from app.knowledge import MemoryKnowledgeBase, PgKnowledgeBase
+from app.http_security import request_id_context
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -31,6 +32,8 @@ def has_interrupt(snapshot):
 
 
 class HealthAgent:
+    version = "v1"
+
     def __init__(self, mock: bool = False):
         load_dotenv(ROOT / ".env")
         self.mock = mock
@@ -69,21 +72,24 @@ class HealthAgent:
         finally:
             self.graph = None
 
-    async def stream(self, thread_id: str, message: str, user_id: str | None = None):
+    async def stream(self, thread_id: str, message: str, user_id: str | None = None, *, web_search: bool = False):
         if self.graph is None:
             async with self:
-                async for event in self.stream(thread_id, message, user_id):
+                async for event in self.stream(thread_id, message, user_id, web_search=web_search):
                     yield event
             return
         user_id = user_id or thread_id
         lock = self._locks.setdefault(user_id, asyncio.Lock())
         async with lock:
-            async for event in self._stream(thread_id, message, user_id):
+            async for event in self._stream(thread_id, message, user_id, web_search=web_search):
                 yield event
 
-    async def _stream(self, thread_id, message, user_id):
+    async def _stream(self, thread_id, message, user_id, *, web_search=False):
         trace_name = thread_id if re.fullmatch(r"[\w-]{1,128}", thread_id) else hashlib.sha256(thread_id.encode()).hexdigest()
-        path = ROOT / "runs" / "traces" / (trace_name + ".jsonl")
+        trace_dir = ROOT / "runs" / "traces"
+        if user_id.startswith("account:"):
+            trace_dir = trace_dir / "accounts"
+        path = trace_dir / (trace_name + ".jsonl")
         path.parent.mkdir(parents=True, exist_ok=True)
         previous = time.perf_counter()
         config = {"configurable": {"thread_id": json.dumps([user_id, thread_id], ensure_ascii=False)}}
@@ -97,12 +103,23 @@ class HealthAgent:
                         {k: v for k, v in chunk.items() if k in ("id", "page", "score")} for chunk in event["data"]["chunks"]]}
                 if event.get("type") == "message":
                     logged = {"type": "message", "content_omitted": True}
+                if event.get("data", {}).get("web_search"):
+                    # 搜索词与网址可能含用户信息，网络轨迹仅保存状态和数量。
+                    logged["data"] = {key: event["data"][key] for key in
+                                      ("web_search", "web_failed", "web_read_count", "web_skipped") if key in event["data"]}
+                if request_id_context.get():
+                    logged["request_id"] = request_id_context.get()
+                if user_id.startswith("account:"):
+                    # 登录模式只记录执行元数据，健康参数和工具结果留在受控会话中。
+                    logged = {key: value for key, value in logged.items()
+                              if key in ("type", "node", "agent", "ms", "request_id", "content_omitted")}
                 file.write(json.dumps(logged, ensure_ascii=False) + "\n")
             return event
         try:
             snapshot = await self.graph.aget_state(config, subgraphs=True)
             graph_input = Command(resume=message) if has_interrupt(snapshot) else {
-                "text": message, "user_id": user_id, "messages": [HumanMessage(message)], "reply": ""}
+                "text": message, "user_id": user_id, "messages": [HumanMessage(message)], "reply": "",
+                "web_search": web_search, "web_evidence": [], "web_status": {}}
             question_seen = False
             async for namespace, updates in self.graph.astream(graph_input, config,
                                                                stream_mode="updates", subgraphs=True):

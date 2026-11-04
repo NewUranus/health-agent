@@ -2,6 +2,13 @@ import { useEffect, useRef, type CSSProperties } from "react";
 import type { NodeEvent, TraceTurn } from "../types";
 import { adherenceLabels, agents, fieldNames, nodeLabels } from "../lib/labels";
 
+function safeUrl(value?: string): string | undefined {
+  try {
+    const url = new URL(value ?? "");
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password ? url.href : undefined;
+  } catch { return undefined; }
+}
+
 function TraceCard({ event, turn, highlighted }: { event: NodeEvent; turn: number; highlighted: string | null }) {
   const data = event.data ?? {};
   const [owner, color] = agents[event.agent] ?? [event.agent, "#80988b"];
@@ -21,8 +28,19 @@ function TraceCard({ event, turn, highlighted }: { event: NodeEvent; turn: numbe
         {data.ok ? `引用校验通过 · 第 ${data.attempt} 次` : (data.problems ?? []).join("；")}
       </p>}
       {data.followup && <p>{data.followup}</p>}
-      {data.degraded && <p className="warning">模型暂不可用，已降级为本地模板。</p>}
+      {data.degraded && <p className="warning">{data.web_search ? "回答模型暂不可用，请在来源卡片查看原文。" : "模型暂不可用，已降级为本地模板。"}</p>}
       {data.no_evidence && <p className="warning">没有足够依据，已拒答。</p>}
+      {event.node === "web_retrieve" && <>
+        <p className={data.web_failed ? "warning" : "success"}>
+          {data.web_failed ? "没有取得可用网页正文。" : `已读取 ${data.web_read_count ?? 0} 个来源，选取 ${data.chunks?.length ?? 0} 个片段。`}
+        </p>
+        {[...new Set(data.web_errors ?? [])].map((error, index) => <p className="warning" key={index}>{error}</p>)}
+        {!!data.web_results?.length && <details><summary>搜索结果与请求链接（不代表已读取）</summary>
+          {data.web_results.map((item, index) => <p key={index}>{safeUrl(item.url)
+            ? <a href={safeUrl(item.url)} target="_blank" rel="noopener noreferrer">{item.title || item.url}</a> : "网址格式无效"}</p>)}
+        </details>}
+      </>}
+      {data.web_sources_only && <p>当前仅展示资料来源，未使用模型生成健康建议。</p>}
       {data.fallback && !data.no_evidence && <p className="warning">生成内容未通过校验，已使用安全模板。</p>}
       {data.prompt_version && <p>提示词版本 {data.prompt_version}</p>}
       {(data.tool_calls ?? []).map((call, index) => <details key={index}>
@@ -32,6 +50,11 @@ function TraceCard({ event, turn, highlighted }: { event: NodeEvent; turn: numbe
       {(data.chunks ?? []).map((chunk, index) => <div key={`${chunk.id}:${index}`} tabIndex={-1}
         className={`source-card${highlighted === `${turn}:${chunk.id}` ? " highlight" : ""}`}>
         <b>{chunk.title}</b><p>{chunk.source}</p>{chunk.page != null && <p>第 {chunk.page} 页</p>}<p>相关度 {Number(chunk.score).toFixed(3)}</p>
+        {chunk.origin === "web" && <>
+          <p className="warning">网络资料 · 未经医学审核</p>
+          {chunk.fetched_at && <p>获取时间：{new Date(chunk.fetched_at).toLocaleString("zh-CN")}</p>}
+          {safeUrl(chunk.url) && <a href={safeUrl(chunk.url)} target="_blank" rel="noopener noreferrer">打开原文 ↗</a>}
+        </>}
       </div>)}
       {event.node === "checkin_question" && <p>第 {data.step}/{data.total} 题</p>}
       {event.node === "checkin" && <>

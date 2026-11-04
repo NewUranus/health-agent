@@ -43,6 +43,10 @@ class MCPClient:
         return (await self.session.list_tools()).tools
 
     async def call_with_trace(self, name, args):
+        # 网络资料会变化且可能暂时失败，不进入健康计算的永久缓存。
+        if name in {"search_web", "read_web_document"}:
+            result = await asyncio.wait_for(self._invoke(name, args), timeout=65 if name == "search_web" else 25)
+            return {"tool": name, "args": args, "result": result, "via": "mcp", "cached": False}
         key = (name, json.dumps(args, sort_keys=True, ensure_ascii=False, allow_nan=False))
         cached = key in self.cache or key in self._inflight
         if key in self.cache:
