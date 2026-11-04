@@ -117,8 +117,8 @@ async def apply_review(kb, doc_id, action, expected_digest, finalize, *, access=
                 archives = {key: value for key, value in archives.items() if value["document_id"] != doc_id}
             else:
                 for item in [document, *replaced, result]:
-                    snapshot = entry(item, action)
-                    archives.setdefault(snapshot["id"], snapshot)
+                    archive_entry = entry(item, action)
+                    archives.setdefault(archive_entry["id"], archive_entry)
             finalization = asyncio.create_task(finalize(None, result))
             try:
                 await asyncio.shield(finalization)
