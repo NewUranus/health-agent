@@ -25,6 +25,9 @@ export interface HistoryRecord {
 }
 
 export interface Source {
+  document_id?: number | null;
+  version?: string;
+  revision?: number;
   id: string;
   title: string;
   source: string;
@@ -57,6 +60,7 @@ export interface NodeData extends Record<string, unknown> {
   degraded?: boolean;
   fallback?: boolean;
   no_evidence?: boolean;
+  evidence_unavailable?: boolean;
   prompt_version?: string;
   tool_calls?: ToolCall[];
   chunks?: Source[];

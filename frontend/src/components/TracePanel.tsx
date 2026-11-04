@@ -43,13 +43,14 @@ function TraceCard({ event, turn, highlighted }: { event: NodeEvent; turn: numbe
       {data.web_sources_only && <p>当前仅展示资料来源，未使用模型生成健康建议。</p>}
       {data.fallback && !data.no_evidence && <p className="warning">生成内容未通过校验，已使用安全模板。</p>}
       {data.prompt_version && <p>提示词版本 {data.prompt_version}</p>}
+      {data.evidence_unavailable && <p className="warning">此步骤使用的资料已撤回或权限已变化，相关内容已隐藏。</p>}
       {(data.tool_calls ?? []).map((call, index) => <details key={index}>
         <summary>{call.tool} · MCP{call.cached ? " · 缓存命中" : ""}</summary>
         <pre>{JSON.stringify({ 参数: call.args, 结果: call.result }, null, 2)}</pre>
       </details>)}
       {(data.chunks ?? []).map((chunk, index) => <div key={`${chunk.id}:${index}`} tabIndex={-1}
         className={`source-card${highlighted === `${turn}:${chunk.id}` ? " highlight" : ""}`}>
-        <b>{chunk.title}</b><p>{chunk.source}</p>{chunk.page != null && <p>第 {chunk.page} 页</p>}<p>相关度 {Number(chunk.score).toFixed(3)}</p>
+        <b>{chunk.title}</b><p>{chunk.source}</p>{chunk.document_id != null && <p>文档 {chunk.document_id} · {chunk.version || "未标版本"} · 修订 {chunk.revision ?? 1}</p>}{chunk.page != null && <p>第 {chunk.page} 页</p>}<p>相关度 {Number(chunk.score).toFixed(3)}</p>
         {chunk.origin === "web" && <>
           <p className="warning">网络资料 · 未经医学审核</p>
           {chunk.fetched_at && <p>获取时间：{new Date(chunk.fetched_at).toLocaleString("zh-CN")}</p>}

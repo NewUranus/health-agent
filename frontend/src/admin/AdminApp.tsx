@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import "./admin.css";
-import { AdminProblem, ApprovalDialog, ApprovalHistory, type Approval } from "./Approvals";
+import { AdminProblem, ApprovalDialog, ApprovalHistory, type Approval, type AccessPolicy } from "./Approvals";
+
+import { KnowledgePolicy, ModelUsage } from "./Governance";
 
 type Document = {
+  withdrawn?: boolean; visibility?: "shared" | "restricted"; allowed_user_ids?: string[]; revision?: number;
   id: number; title: string; source: string; version: string; filename: string;
   status: "draft" | "published"; builtin: boolean; chunk_count: number;
   created_at: string; published_at: string | null; chunks?: DraftChunk[];
@@ -112,7 +115,7 @@ export default function AdminApp() {
       <button className="admin-primary" type="submit">登录</button>
     </form> : <>
       <nav role="tablist" aria-label="后台功能" className="admin-tabs">
-        {["文档", "向量库", "检索测试", "确认记录"].map(name => <button key={name} role="tab" aria-selected={tab === name}
+        {["文档", "向量库", "检索测试", "确认记录", "模型用量"].map(name => <button key={name} role="tab" aria-selected={tab === name}
           aria-controls="admin-content" onClick={() => { setTab(name); setError(""); }}>{name}</button>)}
       </nav>
       <section role="tabpanel" id="admin-content" aria-label={tab}>
@@ -120,6 +123,7 @@ export default function AdminApp() {
         {tab === "向量库" && <VectorLibrary api={api} documents={documents} reportError={reportError} />}
         {tab === "检索测试" && <SearchTest api={api} documents={documents} reportError={reportError} clearError={() => setError("")} />}
         {tab === "确认记录" && <ApprovalHistory api={api} onChanged={refresh} />}
+        {tab === "模型用量" && <ModelUsage api={api} />}
       </section>
     </>}
   </main>;
@@ -137,11 +141,12 @@ function Documents({ api, documents, refresh, reportError, clearError }: Section
   const [dirty, setDirty] = useState<Set<string>>(new Set());
   const [paired, setPaired] = useState(false);
   const [uploadNotice, setUploadNotice] = useState("");
+  const [policyOpen, setPolicyOpen] = useState(false);
   const [approval, setApproval] = useState<Approval | null>(null);
 
-  async function requestApproval(documentId: number, action: "publish" | "delete") {
+  async function requestApproval(documentId: number, action: Approval["action"], access?: AccessPolicy) {
     setApproval(await api<Approval>("/approvals", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ document_id: documentId, action }) }));
+      body: JSON.stringify({ document_id: documentId, action, access }) }));
   }
 
   async function perform(action: () => Promise<void>) {
@@ -149,7 +154,7 @@ function Documents({ api, documents, refresh, reportError, clearError }: Section
     try { await action(); } catch (reason) { reportError(reason); } finally { setBusy(false); }
   }
   function select(document: Document) {
-    setSelected(document); setDirty(new Set()); setSaved(null);
+    setPolicyOpen(false); setSelected(document); setDirty(new Set()); setSaved(null);
   }
   async function upload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -204,7 +209,7 @@ function Documents({ api, documents, refresh, reportError, clearError }: Section
       setApproval(null);
       if (row.status === "succeeded") {
         if (row.action === "delete" && selected?.id === row.document_id) setSelected(null);
-        if (row.action === "publish") select(row.result as Document);
+        if (row.action !== "delete") select(row.result as Document);
       }
       await refresh();
     }} />}
@@ -228,7 +233,7 @@ function Documents({ api, documents, refresh, reportError, clearError }: Section
       <ul className="admin-list">{documents.map(document => <li key={document.id}>
         <div className="admin-row">
           <button className="admin-link" disabled={busy} onClick={() => void perform(async () => select(await api<Document>(`/documents/${document.id}`)))}>{documentLabel(document)}</button>
-          <span className="admin-badge">{document.builtin ? "内置" : document.status === "draft" ? "草稿" : "已发布"}</span>
+          <span className="admin-badge">{document.withdrawn ? "已撤回" : document.builtin ? "内置" : document.status === "draft" ? "草稿" : "已发布"}</span>
         </div>
         <p className="admin-muted">{document.chunk_count} 块{document.version && ` · ${document.version}`}</p>
         {!document.builtin && <button disabled={busy} className="admin-danger" onClick={() => {
@@ -252,7 +257,13 @@ function Documents({ api, documents, refresh, reportError, clearError }: Section
         {selected.status === "draft" ? <div className="admin-review">
           <p>请核对表格和数字后再发布</p>
           <button className="admin-primary" disabled={busy} onClick={() => void publish()}>{publishing ? "发布中…" : "发布"}</button>
-        </div> : <p className="admin-badge">已发布</p>}
+        </div> : <p className="admin-badge">{selected.withdrawn ? "已撤回" : "已发布"}</p>}
+        <div className="admin-actions">
+          <button disabled={busy} onClick={() => setPolicyOpen(value => !value)}>访问范围</button>
+          {selected.status === "published" && !selected.withdrawn && <button disabled={busy} onClick={() => void perform(() => requestApproval(selected.id, "withdraw"))}>撤回文档</button>}
+        </div>
+        {policyOpen && <KnowledgePolicy key={selected.id} api={api} initial={{ visibility: selected.visibility ?? "shared", allowed_user_ids: selected.allowed_user_ids ?? [] }}
+          busy={busy} onSubmit={policy => perform(() => requestApproval(selected.id, "access", policy))} />}
         {selected.chunks?.map(chunk => <article className="admin-chunk" key={chunk.id}>
           <p className="admin-muted">{pageLabel(chunk.page)} · {chunk.id}</p><h3>{chunk.heading}</h3>
           {selected.status === "draft" ? <>

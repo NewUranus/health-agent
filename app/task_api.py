@@ -92,6 +92,8 @@ def attach_task_api(router):
     async def event_page(request: Request, task_id: str, after: int = Query(0, ge=0)):
         store, user_id = require_tasks(request)
         task, events = await asyncio.to_thread(store.events, task_id, user_id, after)
+        filtered = await request.app.state.agent.kb.sanitize_events([row["event"] for row in events], "account:" + user_id)
+        events = [{**row, "event": event} for row, event in zip(events, filtered)]
         return {"task": task, "events": events}
 
     @router.get("/tasks/{task_id}/events", summary="从指定事件序号继续读取任务结果")
@@ -108,6 +110,8 @@ def attach_task_api(router):
                     yield 'data: {"type":"done"}\n\n'
                     return
                 task, rows = await asyncio.to_thread(store.events, task_id, user_id, cursor)
+                filtered = await request.app.state.agent.kb.sanitize_events([row["event"] for row in rows], "account:" + user_id)
+                rows = [{**row, "event": event} for row, event in zip(rows, filtered)]
                 for row in rows:
                     cursor = row["seq"]
                     yield f"id: {cursor}\ndata: " + json.dumps({**row["event"], "seq": cursor}, ensure_ascii=False) + "\n\n"

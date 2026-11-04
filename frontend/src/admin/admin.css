@@ -53,3 +53,6 @@
 .admin-modal { width: min(640px, 100%); max-height: 90vh; overflow: auto; padding: 28px; border-radius: 18px; background: #fffdf8; box-shadow: 0 20px 80px #0004; }
 .admin-modal label { display: flex; gap: 10px; align-items: center; margin: 20px 0; }
 .admin-modal input[type="checkbox"] { width: auto; }
+
+.admin-account-option { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 0; }
+.admin-account-option small, .admin-account-ids { display: block; overflow-wrap: anywhere; color: #64748b; }

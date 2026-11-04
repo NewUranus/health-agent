@@ -8,17 +8,40 @@ import uuid
 from typing import Literal
 
 from fastapi import Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.auth import AuthFailure, digest
 from app.database import schema_lock_sync
 from app.knowledge_review import preview, apply_review
 
 
+class AccessPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    visibility: Literal["shared", "restricted"]
+    allowed_user_ids: list[str] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_accounts(self):
+        import re
+        if any(not re.fullmatch(r"[a-f0-9]{32}", item) for item in self.allowed_user_ids):
+            raise ValueError("账号标识格式无效。")
+        if self.visibility == "shared" and self.allowed_user_ids:
+            raise ValueError("共享资料不能附带指定账号。")
+        self.allowed_user_ids = sorted(set(self.allowed_user_ids))
+        return self
+
+
 class ApprovalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     document_id: int = Field(gt=0)
-    action: Literal["publish", "delete"]
+    action: Literal["publish", "delete", "withdraw", "access"]
+    access: AccessPolicy | None = None
+
+    @model_validator(mode="after")
+    def validate_action(self):
+        if (self.action == "access") != (self.access is not None):
+            raise ValueError("权限调整必须且只能携带 access 参数。")
+        return self
 
 
 class ApprovalDecision(BaseModel):
@@ -32,14 +55,15 @@ class ApprovalSummary(BaseModel):
     title: str
     version: str
     chunk_count: int
-    action: Literal["publish", "delete"]
+    action: Literal["publish", "delete", "withdraw", "access"]
     replaced: list[dict]
     risk: str
+    access: AccessPolicy | None = None
 
 
 class ApprovalInfo(BaseModel):
     id: str
-    action: Literal["publish", "delete"]
+    action: Literal["publish", "delete", "withdraw", "access"]
     document_id: int
     fingerprint: str
     status: Literal["waiting_human", "executing", "succeeded", "rejected", "expired", "invalidated", "failed", "uncertain"]
@@ -171,7 +195,7 @@ async def execute_approval(request, ident, body):
             await asyncio.to_thread(store.finish_memory, ident, token, result, request.state.request_id)
     try:
         async with asyncio.timeout(120):
-            await apply_review(request.app.state.agent.kb, row["document_id"], row["action"], row["fingerprint"], finalize)
+            await apply_review(request.app.state.agent.kb, row["document_id"], row["action"], row["fingerprint"], finalize, access=row["summary"].get("access"))
     except asyncio.CancelledError:
         # 提交响应丢失时保留执行状态，由查询核对；不得假定知识变更未生效。
         raise
@@ -189,7 +213,15 @@ def attach_approval_api(router):
     @router.post("/admin/approvals", status_code=201, response_model=ApprovalInfo, summary="生成待人工核对的知识变更确认单")
     async def create(request: Request, body: ApprovalRequest):
         store, epoch = require_approvals(request)
-        fingerprint, summary = await preview(request.app.state.agent.kb, body.document_id, body.action)
+        access = body.access.model_dump() if body.access else None
+        if access:
+            def check_accounts():
+                with store.db.connection() as execute:
+                    for user_id in access["allowed_user_ids"]:
+                        if not execute("SELECT id FROM hp_users WHERE id = ?", (user_id,)).fetchone():
+                            raise AuthFailure(422, "UNKNOWN_ACCOUNT", "指定账号不存在。")
+            await asyncio.to_thread(check_accounts)
+        fingerprint, summary = await preview(request.app.state.agent.kb, body.document_id, body.action, access=access)
         return await asyncio.to_thread(store.create, epoch, body.action, body.document_id, fingerprint, summary, request.state.request_id)
 
     @router.get("/admin/approvals", response_model=ApprovalList, summary="查询当前管理员凭证下的确认记录")

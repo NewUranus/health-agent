@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.auth import AuthFailure, AuthStore, COOKIE_NAME, SESSION_SECONDS
+from app.knowledge_access import principal
 
 request_id_context = ContextVar("request_id", default="")
 logger = logging.getLogger(__name__)
@@ -138,6 +139,7 @@ def attach_security(application, router, resource_path, version_headers):
         personal = bool(resource and (resource in {"/chat", "/history", "/followup", "/tasks"} or resource.startswith(("/tools/", "/tasks/"))))
         audited = required and bool(admin or personal or (resource and resource.startswith("/auth/")))
         actor = None
+        knowledge_token = principal.set("")
         try:
             if required:
                 request.state.user = await asyncio.to_thread(store.resolve, request.cookies.get(COOKIE_NAME))
@@ -153,6 +155,7 @@ def attach_security(application, router, resource_path, version_headers):
                 if password and not hmac.compare_digest(authorization.encode(), ("Bearer " + password).encode()):
                     raise AuthFailure(401, "ADMIN_AUTH_REQUIRED", "密码错误")
                 actor = "knowledge-admin"
+                principal.set(None)
             if required and personal:
                 if not request.state.user:
                     raise AuthFailure(401, "AUTH_REQUIRED", "请先登录。")
@@ -174,6 +177,7 @@ def attach_security(application, router, resource_path, version_headers):
             response = error_response(request, 500, "服务暂时无法完成请求，请联系管理员。")
         finally:
             request_id_context.reset(context)
+            principal.reset(knowledge_token)
         if audited:
             try:
                 await asyncio.to_thread(store.audit, actor, "http.response", resource, request.state.request_id, response.status_code)

@@ -14,7 +14,8 @@ from uuid import uuid4
 
 from rank_bm25 import BM25Okapi
 
-from app.rag import Chunk, tokenize
+from app.rag import tokenize
+from app.knowledge_access import KnowledgeChunk, allowed, sql_access, evidence_key, references_valid, evidence_refs, merge_evidence
 from app.terms import expand_query
 
 logger = logging.getLogger(__name__)
@@ -47,7 +48,7 @@ def make_chunks(doc_id, chunks):
 
 
 def hit(row, score=0):
-    return Chunk(row['id'], row['document_title'], row['source'], row['text'], float(score), row['page'])
+    return KnowledgeChunk(row['id'], row['document_title'], row['source'], row['text'], float(score), row['page'], row.get('document_id'), row.get('version', ''), row.get('revision', 1))
 
 
 def preview(row):
@@ -173,6 +174,59 @@ class KnowledgeBase:
             logger.warning('未配置向量模型，本次使用 BM25')
         return await asyncio.to_thread(bm25, await self.published_rows(document_id=document_id), query, k)
 
+    async def valid_evidence(self, chunks):
+        from dataclasses import asdict
+        current = {row['id']: asdict(hit(row)) for row in await self.published_rows()}
+        return [chunk for chunk in chunks if chunk.get('id', '').startswith('web-') or
+                (chunk['id'] in current and evidence_key(chunk) == evidence_key(current[chunk['id']]))]
+
+    async def sanitize_events(self, events, user_id):
+        from app.knowledge_access import knowledge_scope
+        import re
+        with knowledge_scope(user_id):
+            rows = await self.published_rows()
+        current = {row['id']: row for row in rows}
+        result = []
+        for event in events:
+            event = copy.deepcopy(event)
+            if event.get('type') == 'node' and not references_valid(event.get('evidence', []), current):
+                event['data'] = {'evidence_unavailable': True}
+            if event.get('data', {}).get('chunks'):
+                event['data']['chunks'] = [chunk for chunk in event['data']['chunks'] if chunk.get('id', '').startswith('web-') or
+                    (chunk['id'] in current and evidence_key(chunk) == evidence_key(current[chunk['id']]))]
+            if event.get('type') == 'message':
+                ids = re.findall(r'\[cite:([^\]\s]+)\]', event.get('content', ''))
+                if not references_valid(event.get('evidence', []), current) or any(cid not in current and not cid.startswith('web-') for cid in ids):
+                    event['content'] = '历史结果引用的资料已撤回、删除或访问权限已变化，相关内容已隐藏。请重新提问获取当前可用依据。'
+            result.append(event)
+        return result
+
+    async def valid_references(self, refs):
+        return references_valid(refs, {row['id']: row for row in await self.published_rows()})
+
+    async def history_evidence(self, messages):
+        current = {row['id']: row for row in await self.published_rows()}
+        refs = []
+        for message in messages:
+            if message.type != 'ai':
+                continue
+            refs.extend(message.additional_kwargs.get('knowledge_evidence', []))
+            ids = re.findall(r'\[cite:([^\]\s]+)\]', message.content) if isinstance(message.content, str) else []
+            refs.extend(evidence_refs([current[cid] for cid in ids if cid in current]))
+        return merge_evidence(refs)
+
+    async def visible_history(self, messages):
+        current = {row['id']: row for row in await self.published_rows()}
+        result = []
+        for message in messages:
+            if message.type == 'ai':
+                refs = message.additional_kwargs.get('knowledge_evidence', [])
+                ids = re.findall(r'\[cite:([^\]\s]+)\]', message.content) if isinstance(message.content, str) else []
+                if not references_valid(refs, current) or any(cid not in current and not cid.startswith('web-') for cid in ids):
+                    continue
+            result.append(message)
+        return result
+
     async def list_chunks(self, document_id=None, q=None, limit=50, offset=0):
         rows = [r for r in await self.published_rows() if (document_id is None or r['document_id'] == document_id)
                 and (not q or q.casefold() in r['text'].casefold())]
@@ -249,7 +303,7 @@ class MemoryKnowledgeBase(KnowledgeBase):
                 doc_id = self.next_id + offset
                 rows = make_chunks(doc_id, draft['chunks'])
                 documents.append({**draft, 'id': doc_id, 'status': 'draft', 'builtin': False,
-                                  'created_at': now(), 'published_at': None, 'chunks': rows})
+                                  'created_at': now(), 'published_at': None, 'chunks': rows, 'withdrawn': False, 'visibility': 'shared', 'allowed_user_ids': [], 'revision': 1})
             self.documents.update({d['id']: d for d in documents})
             self.next_id += len(documents)
             return [self.public_document(d, True) for d in documents]
@@ -314,6 +368,7 @@ class MemoryKnowledgeBase(KnowledgeBase):
                 self.documents[doc_id] = {'id': doc_id, 'title': chunk.title, 'source': chunk.source, 'version': '',
                     'filename': chunk.id + '.md', 'status': 'published', 'builtin': True, 'content_hash': content_hash(chunk),
                     'created_at': old[chunk.id]['created_at'] if chunk.id in old else now(), 'published_at': now(),
+                    **{key: old.get(chunk.id, {}).get(key, default) for key, default in [('withdrawn', False), ('visibility', 'shared'), ('allowed_user_ids', []), ('revision', 1)]},
                     'chunks': [{'id': chunk.id, 'document_id': doc_id, 'seq': 0, 'page': chunk.page,
                                 'heading': chunk.title, 'text': chunk.text, 'embedding': vector}]}
             ids = {c.id for c in chunks}
@@ -323,9 +378,9 @@ class MemoryKnowledgeBase(KnowledgeBase):
 
     async def published_rows(self, document_id=None):
         return [copy.deepcopy(c) | {'document_title': d['title'], 'source': d['source'],
-                                   'variant': d.get('variant', 'standard'), 'comparison_id': d.get('comparison_id', '')}
+                                   'variant': d.get('variant', 'standard'), 'comparison_id': d.get('comparison_id', ''), 'version': d.get('version', ''), 'revision': d.get('revision', 1)}
                 for d in sorted(self.documents.values(), key=lambda d: d['id'])
-                if d['status'] == 'published' and (document_id is None or d['id'] == document_id)
+                if d['status'] == 'published' and allowed(d) and (document_id is None or d['id'] == document_id)
                 for c in sorted(d['chunks'], key=lambda c: c['seq'])]
 
     async def vector_search(self, vector, k, threshold, document_id=None):
@@ -366,6 +421,10 @@ class PgKnowledgeBase(KnowledgeBase):
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(), published_at TIMESTAMPTZ)''')
             await conn.execute("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS variant TEXT NOT NULL DEFAULT 'standard'")
             await conn.execute("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS comparison_id TEXT NOT NULL DEFAULT ''")
+            await conn.execute("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS withdrawn BOOLEAN NOT NULL DEFAULT FALSE")
+            await conn.execute("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'shared'")
+            await conn.execute("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS allowed_user_ids JSONB NOT NULL DEFAULT '[]'::jsonb")
+            await conn.execute("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1")
             await conn.execute('''CREATE TABLE IF NOT EXISTS knowledge_chunks (
                 id TEXT PRIMARY KEY CHECK (id ~ '^[[:alnum:]_-]+$'),
                 document_id BIGINT NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
@@ -421,7 +480,7 @@ class PgKnowledgeBase(KnowledgeBase):
     async def list_documents(self):
         async with self.connection() as conn:
             rows = await (await conn.execute('''SELECT d.id, d.title, d.source, d.version, d.filename,
-                d.status, d.builtin, d.variant, d.comparison_id, d.created_at, d.published_at, COUNT(c.id) AS chunk_count
+                d.status, d.builtin, d.variant, d.comparison_id, d.withdrawn, d.visibility, d.allowed_user_ids, d.revision, d.created_at, d.published_at, COUNT(c.id) AS chunk_count
                 FROM knowledge_documents d LEFT JOIN knowledge_chunks c ON c.document_id = d.id
                 GROUP BY d.id ORDER BY d.id''')).fetchall()
             for row in rows:
@@ -505,24 +564,26 @@ class PgKnowledgeBase(KnowledgeBase):
                     await conn.execute('DELETE FROM knowledge_documents WHERE id = %s', (row['id'],))
 
     async def published_rows(self, document_id=None):
+        access, args = sql_access()
         async with self.connection() as conn:
-            rows = await (await conn.execute('''SELECT c.id, c.document_id, c.seq, c.page, c.heading, c.text,
-                c.embedding::text AS embedding, d.title AS document_title, d.source, d.variant, d.comparison_id
-                FROM knowledge_chunks c JOIN knowledge_documents d ON d.id = c.document_id
-                WHERE d.status = 'published' AND (%s::bigint IS NULL OR c.document_id = %s)
-                ORDER BY d.id, c.seq''', (document_id, document_id))).fetchall()
+            rows = await (await conn.execute("""SELECT c.id, c.document_id, c.seq, c.page, c.heading, c.text,
+                c.embedding::text AS embedding, d.title AS document_title, d.source, d.variant, d.comparison_id,
+                d.version, d.revision FROM knowledge_chunks c JOIN knowledge_documents d ON d.id = c.document_id
+                WHERE d.status = 'published' """ + access + " AND (%s::bigint IS NULL OR c.document_id = %s) ORDER BY d.id, c.seq",
+                (*args, document_id, document_id))).fetchall()
             for row in rows:
                 row['embedding'] = json.loads(row['embedding']) if row['embedding'] is not None else None
             return rows
 
     async def vector_search(self, vector, k, threshold, document_id=None):
+        access, args = sql_access()
         async with self.connection() as conn:
-            rows = await (await conn.execute('''SELECT * FROM (
-                SELECT c.id, c.page, c.text, d.title AS document_title, d.source,
+            rows = await (await conn.execute("""SELECT * FROM (
+                SELECT c.id, c.document_id, c.page, c.text, d.title AS document_title, d.source, d.version, d.revision,
                     1 - (c.embedding <=> %s::vector) AS score
                 FROM knowledge_chunks c JOIN knowledge_documents d ON d.id = c.document_id
-                WHERE d.status = 'published' AND c.embedding IS NOT NULL AND vector_dims(c.embedding) = %s
+                WHERE d.status = 'published' AND c.embedding IS NOT NULL AND vector_dims(c.embedding) = %s """ + access + """
                     AND (%s::bigint IS NULL OR c.document_id = %s)
-                ) ranked WHERE score >= %s ORDER BY score DESC, id LIMIT %s''',
-                (json.dumps(vector), len(vector), document_id, document_id, threshold, k))).fetchall()
+                ) ranked WHERE score >= %s ORDER BY score DESC, id LIMIT %s""",
+                (json.dumps(vector), len(vector), *args, document_id, document_id, threshold, k))).fetchall()
             return [hit(row, row['score']) for row in rows]

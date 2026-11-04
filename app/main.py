@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import time
 from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -218,6 +219,24 @@ def create_app():
     @api_v1.get("/admin/documents")
     async def documents():
         return {"documents": await application.state.agent.kb.list_documents()}
+
+    @api_v1.get("/admin/accounts", summary="查看可用于知识授权的账号标识")
+    async def knowledge_accounts():
+        if not required:
+            return {"accounts": []}
+        def read():
+            with application.state.auth_store.connection() as execute:
+                return [dict(row) for row in execute("SELECT id, username FROM hp_users ORDER BY username LIMIT 500").fetchall()]
+        return {"accounts": await asyncio.to_thread(read)}
+
+    @api_v1.get("/admin/model-usage", summary="查看最近七天模型调用用量，不含提示正文")
+    async def model_usage():
+        if not required:
+            return {"groups": [], "currency_cost": None}
+        def read():
+            with application.state.auth_store.connection() as execute:
+                return [dict(row) for row in execute("SELECT model, scene, status, COUNT(*) AS calls, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(duration_ms) AS duration_ms, SUM(CASE WHEN input_tokens IS NULL OR output_tokens IS NULL THEN 1 ELSE 0 END) AS unknown_usage_calls FROM hp_model_usage WHERE at >= ? GROUP BY model, scene, status", (int(time.time()) - 7 * 86400,)).fetchall()]
+        return {"groups": await asyncio.to_thread(read), "currency_cost": None}
 
     @api_v1.get("/admin/documents/{doc_id}")
     async def document(doc_id: int):

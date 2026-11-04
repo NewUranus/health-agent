@@ -3,6 +3,7 @@ import logging
 import os
 from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from app.model_gateway import ModelGateway
 
 logger = logging.getLogger(__name__)
 
@@ -18,10 +19,14 @@ def make_llm(mock=False):
     key = os.getenv("QWEN_API_KEY")
     if not key:
         return None
-    return ChatOpenAI(api_key=key, base_url=os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-                      model=os.getenv("QWEN_MODEL", "qwen-plus"), temperature=0, timeout=30, max_retries=1,
+    def client(model):
+        return ChatOpenAI(api_key=key, base_url=os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+                      model=model, temperature=0, timeout=30, max_retries=0,
                       # 千问默认开思考模式，同样的请求从约 2 秒变成 30 秒以上
                       extra_body={"enable_thinking": False})
+    model = os.getenv("QWEN_MODEL", "qwen-plus")
+    fallback = os.getenv("QWEN_FALLBACK_MODEL")
+    return ModelGateway(client(model), model, client(fallback) if fallback else None, fallback)
 
 
 def make_embedder(mock=False):

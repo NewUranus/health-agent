@@ -20,6 +20,9 @@ from app.rag import Retriever
 from app.knowledge import MemoryKnowledgeBase, PgKnowledgeBase
 from app.http_security import request_id_context
 from app.user_lock import user_execution_lock
+from app.knowledge_access import knowledge_scope, evidence_refs
+from app.model_gateway import model_run, save_usage
+from app.task_context import task_execution
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -82,8 +85,14 @@ class HealthAgent:
         user_id = user_id or thread_id
         lock = self._locks.setdefault(user_id, asyncio.Lock())
         async with lock, user_execution_lock(user_id):
-            async for event in self._stream(thread_id, message, user_id, web_search=web_search):
-                yield event
+            with knowledge_scope(user_id), model_run() as usage:
+                try:
+                    async for event in self._stream(thread_id, message, user_id, web_search=web_search):
+                        yield event
+                finally:
+                    execution = task_execution.get()
+                    await asyncio.to_thread(save_usage, user_id, execution.task_id if execution else None,
+                                            request_id_context.get(), usage.records)
 
     async def _stream(self, thread_id, message, user_id, *, web_search=False):
         trace_name = thread_id if re.fullmatch(r"[\w-]{1,128}", thread_id) else hashlib.sha256(thread_id.encode()).hexdigest()
@@ -95,6 +104,8 @@ class HealthAgent:
         previous = time.perf_counter()
         config = {"configurable": {"thread_id": json.dumps([user_id, thread_id], ensure_ascii=False)}}
         reply = ""
+        evidence = []
+        reply_refs = []
         def record(event):
             with path.open("a", encoding="utf-8") as file:
                 # 文档原文只通过事件返回页面，不写入轨迹日志。
@@ -135,12 +146,20 @@ class HealthAgent:
                     if name not in OWNERS or not isinstance(update, dict):
                         continue
                     now = time.perf_counter()
-                    event = {"type": "node", "node": name, "agent": OWNERS[name], "ms": max(0, int((now - previous) * 1000)), "data": update.get("event_data", {})}
+                    event = {"type": "node", "node": name, "agent": OWNERS[name], "ms": max(0, int((now - previous) * 1000)), "data": update.get("event_data", {}), "evidence": update.get("reply_evidence", [])}
+                    if event["data"].get("chunks"):
+                        evidence.extend(event["data"]["chunks"])
+                        event["data"] = {**event["data"], "chunks": await self.kb.valid_evidence(event["data"]["chunks"])}
+                    if event["evidence"] and not await self.kb.valid_references(event["evidence"]):
+                        event["data"] = {"evidence_unavailable": True}
                     previous = now
                     if "reply" in update:
                         reply = update["reply"]
+                        reply_refs = update.get("reply_evidence", [])
                     yield record(event)
-            yield record({"type": "message", "content": reply})
+            if (evidence and len(await self.kb.valid_evidence(evidence)) != len(evidence)) or not await self.kb.valid_references(reply_refs):
+                reply = "本轮使用的资料已撤回或权限发生变化，请重新提问获取当前可用依据。"
+            yield record({"type": "message", "content": reply, "evidence": reply_refs or evidence_refs(evidence)})
         except Exception:
             yield record({"type": "error", "message": "本轮未能完成。请检查输入范围（风险模型适用30–74岁），或稍后重试。"})
         yield record({"type": "done"})

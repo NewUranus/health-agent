@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 
 export type AdminApi = <T>(path: string, init?: RequestInit) => Promise<T>;
+export type AccessPolicy = { visibility: "shared" | "restricted"; allowed_user_ids: string[] };
+const actions = { publish: "发布知识", delete: "删除文档", withdraw: "撤回文档", access: "调整访问范围" };
 export type Approval = {
-  id: string; fingerprint: string; action: "publish" | "delete"; document_id: number; status: string;
+  id: string; fingerprint: string; action: "publish" | "delete" | "withdraw" | "access"; document_id: number; status: string;
   expires_at: number; request_id: string; error_code: string | null;
-  summary: { title: string; version: string; chunk_count: number; risk: string; replaced: { id: number; title: string; version: string }[] };
+  summary: { access?: AccessPolicy | null; title: string; version: string; chunk_count: number; risk: string; replaced: { id: number; title: string; version: string }[] };
   result: unknown;
 };
 export class AdminProblem extends Error {
@@ -33,9 +35,11 @@ export function ApprovalDialog({ approval, api, onDone, onClose }: {
     } finally { setBusy(false); }
   }
   return <div className="admin-modal-backdrop"><section role="dialog" aria-modal="true" aria-labelledby="approval-title" className="admin-modal">
-    <h2 id="approval-title">{approval.action === "publish" ? "确认发布知识" : "确认删除文档"}</h2>
+    <h2 id="approval-title">{"确认" + actions[approval.action]}</h2>
     <p><strong>{approval.summary.title}</strong> · {approval.summary.version || "未标版本"} · {approval.summary.chunk_count} 个片段</p>
     <p className="admin-review">{approval.summary.risk}</p>
+    {approval.summary.access && <p>新访问范围：{approval.summary.access.visibility === "shared" ? "所有可使用知识问答的用户" : `仅 ${approval.summary.access.allowed_user_ids.length} 个指定账号`}
+      {approval.summary.access.allowed_user_ids.length > 0 && <small className="admin-account-ids">账号标识：{approval.summary.access.allowed_user_ids.join("、")}</small>}</p>}
     {!!approval.summary.replaced.length && <><h3>将替换并删除的旧文档</h3><ul>{approval.summary.replaced.map(item =>
       <li key={item.id}>{item.title} · {item.version || "未标版本"}（编号 {item.id}）</li>)}</ul></>}
     <p>有效期至 {new Date(approval.expires_at).toLocaleString("zh-CN")}；内容变化后必须重新核对。</p>
@@ -62,11 +66,11 @@ export function ApprovalHistory({ api, onChanged }: { api: AdminApi; onChanged: 
       .catch(reason => { if (!controller.signal.aborted) setError(reason.message); });
     return () => controller.abort();
   }, [api, revision]);
-  return <div className="admin-panel"><h2>确认记录</h2><p>这里记录知识发布和删除的处理结果。执行结果不明时先核对文档，不自动重放。</p>
+  return <div className="admin-panel"><h2>确认记录</h2><p>这里记录知识发布、删除、撤回和访问范围调整的处理结果。执行结果不明时先核对文档，不自动重放。</p>
     <button onClick={() => setRevision(value => value + 1)}>刷新确认记录</button>
     {error && <p role="alert">{error}</p>}
     {!rows.length && !error && <p>暂无确认记录。</p>}
-    <ul className="admin-list">{rows.map(row => <li key={row.id}><strong>{row.summary.title}</strong> · {row.action === "publish" ? "发布" : "删除"} · {labels[row.status] ?? row.status}
+    <ul className="admin-list">{rows.map(row => <li key={row.id}><strong>{row.summary.title}</strong> · {actions[row.action]} · {labels[row.status] ?? row.status}
       <p>有效期：{new Date(row.expires_at).toLocaleString("zh-CN")} · 请求编号：{row.request_id}</p>
       {row.error_code && <p>{row.error_code}：请核对文档现状，再决定是否发起新的确认。</p>}
       {row.status === "waiting_human" && <button onClick={() => setSelected(row)}>核对确认单</button>}

@@ -80,6 +80,8 @@ class AuthStore:
                 "CREATE TABLE IF NOT EXISTS hp_login_limits (key TEXT PRIMARY KEY, attempts INTEGER NOT NULL, until_at BIGINT NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS hp_audit (id TEXT PRIMARY KEY, at BIGINT NOT NULL, actor TEXT, action TEXT NOT NULL, resource TEXT NOT NULL, request_id TEXT NOT NULL, status INTEGER NOT NULL)",
                 "CREATE INDEX IF NOT EXISTS hp_audit_request ON hp_audit(request_id)",
+                "CREATE TABLE IF NOT EXISTS hp_model_usage (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES hp_users(id), task_id TEXT, request_id TEXT NOT NULL, at BIGINT NOT NULL, scene TEXT NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL, input_tokens BIGINT, output_tokens BIGINT, duration_ms BIGINT NOT NULL)",
+                "CREATE INDEX IF NOT EXISTS hp_model_usage_at ON hp_model_usage(at)",
             ):
                 execute(statement)
 
