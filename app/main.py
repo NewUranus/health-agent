@@ -22,6 +22,8 @@ from app.ingest import IngestError, chunk_pages, clean_pages, parse_pdf
 from app.knowledge import KnowledgeError
 from app.auth import AuthStore, COOKIE_NAME
 from app.http_security import attach_security, auth_required, current_identity, error_response, ErrorInfo
+from app.tasks import TaskRunner, TaskStore
+from app.task_api import attach_task_api
 
 ROOT = Path(__file__).resolve().parent.parent
 API_VERSION = "v1"
@@ -33,7 +35,7 @@ def v1_resource_path(path: str) -> str | None:
     for prefix in (API_PREFIX, "/api"):
         if path.startswith(prefix + "/"):
             resource = path[len(prefix):]
-            if resource.split("/", 2)[1] in {"health", "chat", "history", "followup", "tools", "admin", "auth"}:
+            if resource.split("/", 2)[1] in {"health", "chat", "history", "followup", "tools", "admin", "auth", "tasks"}:
                 return resource
     return None
 
@@ -93,6 +95,14 @@ def create_app():
     load_dotenv(ROOT / ".env")
     mock = os.getenv("HEALTH_AGENT_MOCK") == "1"
     required = auth_required(mock)
+    task_timeout = int(os.getenv("HEALTH_AGENT_TASK_TIMEOUT", "300"))
+    if not 1 <= task_timeout <= 3600:
+        raise ValueError("HEALTH_AGENT_TASK_TIMEOUT 须为 1–3600 秒。")
+    embedded_worker = os.getenv("HEALTH_AGENT_TASK_WORKER", "embedded")
+    if embedded_worker not in {"embedded", "external"}:
+        raise ValueError("HEALTH_AGENT_TASK_WORKER 只支持 embedded 或 external。")
+    if required and embedded_worker == "external" and not os.getenv("DATABASE_URL"):
+        raise ValueError("独立 Worker 模式需要 DATABASE_URL。")
 
     @asynccontextmanager
     async def lifespan(application):
@@ -100,9 +110,18 @@ def create_app():
             application.state.auth_store = await asyncio.to_thread(AuthStore)
             await asyncio.to_thread(application.state.auth_store.setup)
             application.state.login_slots = asyncio.Semaphore(2)
+            application.state.task_store = TaskStore(application.state.auth_store)
+            await asyncio.to_thread(application.state.task_store.setup)
         async with HealthAgent(mock=mock) as agent:
             application.state.agent = agent
-            yield
+            runner = TaskRunner(application.state.task_store, agent, timeout=task_timeout) if required and embedded_worker == "embedded" else None
+            if runner:
+                await runner.start()
+            try:
+                yield
+            finally:
+                if runner:
+                    await runner.close()
 
     application = FastAPI(
         title="HealthPilot API V1", version="1.0.0",
@@ -115,6 +134,7 @@ def create_app():
     application.mount("/static", StaticFiles(directory=ROOT / "web"), name="static")
     attach_security(application, api_v1, v1_resource_path,
                     {"X-API-Version": API_VERSION, "X-Agent-Version": HealthAgent.version})
+    attach_task_api(api_v1)
 
     @application.exception_handler(KnowledgeError)
     async def knowledge_error(request: Request, exc):

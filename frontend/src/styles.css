@@ -1205,3 +1205,11 @@ html {
 .account-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .demo-notice { background: #f8f1db; color: #715b28; padding: 5px 16px; text-align: center; font-size: 12px; }
 @media (max-width: 600px) { .auth-card { padding: 24px; } .account-name { max-width: 75px; } }
+
+/* 任务结果按账号保存，窄面板内允许长编号换行。 */
+.task-list { overflow: auto; padding: 16px; font-size: 13px; line-height: 1.65; }
+.task-list > p { color: #687b70; }
+.saved-task { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 0; border-bottom: 1px solid #e2e9e5; }
+.saved-task time, .saved-task small { width: 100%; color: #687b70; overflow-wrap: anywhere; }
+.saved-task button, .task-list > button { border: 1px solid #cbd9d0; background: #fff; border-radius: 6px; padding: 5px 9px; cursor: pointer; }
+.saved-result { white-space: pre-wrap; overflow-wrap: anywhere; width: 100%; }

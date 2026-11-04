@@ -356,7 +356,8 @@ class PgKnowledgeBase(KnowledgeBase):
             yield connection
 
     async def setup(self):
-        async with self.connection() as conn:
+        from app.database import schema_lock
+        async with schema_lock(self.url), self.connection() as conn:
             await conn.execute('CREATE EXTENSION IF NOT EXISTS vector')
             await conn.execute('''CREATE TABLE IF NOT EXISTS knowledge_documents (
                 id BIGSERIAL PRIMARY KEY, title TEXT NOT NULL, source TEXT NOT NULL, version TEXT NOT NULL,

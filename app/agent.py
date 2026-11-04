@@ -19,6 +19,7 @@ from app.memory import memory_backend
 from app.rag import Retriever
 from app.knowledge import MemoryKnowledgeBase, PgKnowledgeBase
 from app.http_security import request_id_context
+from app.user_lock import user_execution_lock
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -80,7 +81,7 @@ class HealthAgent:
             return
         user_id = user_id or thread_id
         lock = self._locks.setdefault(user_id, asyncio.Lock())
-        async with lock:
+        async with lock, user_execution_lock(user_id):
             async for event in self._stream(thread_id, message, user_id, web_search=web_search):
                 yield event
 

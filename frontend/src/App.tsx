@@ -6,6 +6,8 @@ import { HistoryPanel } from "./components/HistoryPanel";
 import { MessageContent } from "./components/MessageContent";
 import { SimulationPanel } from "./components/SimulationPanel";
 import { TracePanel } from "./components/TracePanel";
+import { TasksPanel } from "./components/TasksPanel";
+import { runTask } from "./lib/tasks";
 import { createSseParser } from "./lib/sse";
 import { createId, initialSession, saveUserId, sessionReducer } from "./lib/session";
 
@@ -23,7 +25,7 @@ export default function App() {
   const [input, setInput] = useState("");
   const [webSearch, setWebSearch] = useState(false);
   const [traceVisible, setTraceVisible] = useState(true);
-  const [panelTab, setPanelTab] = useState<"trace" | "simulate" | "history">("trace");
+  const [panelTab, setPanelTab] = useState<"trace" | "simulate" | "history" | "tasks">("trace");
   const [highlighted, setHighlighted] = useState<string | null>(null);
   const [selection, setSelection] = useState(0);
   const messages = useRef<HTMLDivElement>(null);
@@ -79,19 +81,7 @@ export default function App() {
     let status = "连接未完成";
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
-      const response = await apiFetch("/api/chat", {
-        method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
-        body: JSON.stringify({ thread_id: session.threadId, user_id: session.userId, message: text, ...(webSearch ? { web_search: true } : {}) }),
-      });
-      if (!response.ok || !response.body) {
-        const problem = await response.json().catch(() => ({}));
-        throw new Error(typeof problem.detail === "string"
-          ? `连接请求未完成：${problem.detail}${problem.next_action ? ` ${problem.next_action}` : ""}${problem.request_id ? `（请求编号：${problem.request_id}）` : ""}`
-          : "连接暂不可用，请稍后重试。");
-      }
-      reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      const parser = createSseParser((event) => {
+      const onEvent = (event: import("./types").ServerEvent) => {
         if (controller.signal.aborted) return;
         if (event.type === "done") gotDone = true;
         if (event.type === "message") gotMessage = true;
@@ -100,11 +90,28 @@ export default function App() {
           if ("code" in event && event.code === "AUTH_REQUIRED") sessionExpired();
         }
         dispatch({ type: "event", event });
-      });
-      while (true) {
-        const { value, done } = await reader.read();
-        parser.push(decoder.decode(value, { stream: !done }));
-        if (done) { parser.flush(); break; }
+      };
+      if (auth.user) {
+        await runTask({ thread_id: session.threadId, message: text, web_search: webSearch }, createId(), controller.signal, onEvent);
+      } else {
+        const response = await apiFetch("/api/chat", {
+          method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
+          body: JSON.stringify({ thread_id: session.threadId, user_id: session.userId, message: text, ...(webSearch ? { web_search: true } : {}) }),
+        });
+        if (!response.ok || !response.body) {
+          const problem = await response.json().catch(() => ({}));
+          throw new Error(typeof problem.detail === "string"
+            ? `连接请求未完成：${problem.detail}${problem.next_action ? ` ${problem.next_action}` : ""}${problem.request_id ? `（请求编号：${problem.request_id}）` : ""}`
+            : "连接暂不可用，请稍后重试。");
+        }
+        reader = response.body!.getReader();
+        const decoder = new TextDecoder();
+        const parser = createSseParser(onEvent);
+        while (true) {
+          const { value, done } = await reader.read();
+          parser.push(decoder.decode(value, { stream: !done }));
+          if (done) { parser.flush(); break; }
+        }
       }
       if (!gotError && (!gotDone || !gotMessage)) throw new Error("连接中断，回复未完成。请重试。");
       status = gotError ? "本轮未完成，请检查信息后重试" : "本轮已完成 · 点击引用查看来源";
@@ -221,7 +228,13 @@ export default function App() {
             <button type="button" role="tab" aria-selected={panelTab === "trace"} onClick={() => setPanelTab("trace")}>Agent 轨迹<span>{traceCount}</span></button>
             <button type="button" role="tab" aria-selected={panelTab === "simulate"} onClick={() => setPanelTab("simulate")}>干预模拟</button>
             <button type="button" role="tab" aria-selected={panelTab === "history"} onClick={() => setPanelTab("history")}>随访记录</button>
+            {auth.user && <button type="button" role="tab" aria-selected={panelTab === "tasks"} onClick={() => setPanelTab("tasks")}>任务记录</button>}
           </div>
+          {panelTab === "tasks" && auth.user && <TasksPanel busy={session.busy} onResume={(task, events) => {
+            if (session.busy) return;
+            dispatch({ type: "restore", threadId: task.thread_id, events, waiting: task.status === "waiting_human" });
+            setInput(""); setWebSearch(false); setHighlighted(null); setPanelTab("trace");
+          }} />}
           {panelTab === "trace" && <TracePanel turns={session.traces} highlighted={highlighted} selection={selection} />}
           {panelTab === "simulate" && <SimulationPanel profile={session.intake?.profile} />}
           {panelTab === "history" && <HistoryPanel userId={session.userId} followup={session.followup}

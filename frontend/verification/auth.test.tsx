@@ -20,7 +20,8 @@ function server(me: () => Response = () => json({ detail: "请先登录。" }, 4
     if (url.endsWith("/auth/logout")) return json({ ok: true });
     if (url === "/api/health") return json({ ok: true, mock: true });
     if (url.startsWith("/api/followup")) return json({ status: "none" });
-    if (url === "/api/chat") return new Response('data: {"type":"message","content":"已收到"}\n\ndata: {"type":"done"}\n\n');
+    if (url === "/api/v1/tasks") return json({ id: "task-test" });
+    if (url.startsWith("/api/v1/tasks/task-test/events")) return new Response('data: {"type":"message","content":"已收到"}\n\ndata: {"type":"done"}\n\n');
     throw new Error("未预期请求");
   }));
   return calls;
@@ -45,8 +46,9 @@ describe("登录与页面隔离", () => {
     expect(screen.queryByRole("button", { name: "清除身份" })).not.toBeInTheDocument();
     await userEvent.type(screen.getByLabelText("输入健康信息或问题"), "你好{Enter}");
     await screen.findByText("已收到");
-    const chat = calls.find(c => c.url === "/api/chat")!;
-    expect(JSON.parse(String(chat.init?.body)).user_id).toBe(user.id);
+    const chat = calls.find(c => c.url === "/api/v1/tasks")!;
+    expect(JSON.parse(String(chat.init?.body)).user_id).toBeUndefined();
+    expect(new Headers(chat.init?.headers).get("Idempotency-Key")).toBeTruthy();
     expect(new Headers(chat.init?.headers).get("X-HealthPilot-User")).toBe(user.id);
     expect(new Headers(chat.init?.headers).get("X-HealthPilot-Request")).toBe("1");
     expect(JSON.stringify(localStorage)).not.toContain("validation-password");

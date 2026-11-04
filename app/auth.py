@@ -13,6 +13,7 @@ import time
 import uuid
 
 from dotenv import load_dotenv
+from app.database import schema_lock_sync
 
 ROOT = Path(__file__).resolve().parent.parent
 COOKIE_NAME = "healthpilot_session"
@@ -70,7 +71,7 @@ class AuthStore:
             fd = os.open(self.path, os.O_CREAT | os.O_WRONLY, 0o600)
             os.close(fd)
             self.path.chmod(0o600)
-        with self.connection() as execute:
+        with schema_lock_sync(self.url), self.connection() as execute:
             for statement in (
                 "CREATE TABLE IF NOT EXISTS hp_users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at BIGINT NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS hp_sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES hp_users(id), expires_at BIGINT NOT NULL)",

@@ -38,6 +38,7 @@ export type SessionAction =
   | { type: "event"; event: ServerEvent }
   | { type: "finish"; status: string }
   | { type: "followup"; value: FollowupStatus; threadId: string; userId: string }
+  | { type: "restore"; threadId: string; events: ServerEvent[]; waiting: boolean }
   | { type: "reset"; threadId: string; userId?: string };
 
 export function initialSession(userId?: string): Session {
@@ -56,6 +57,12 @@ function freshSession(threadId: string, userId: string): Session {
 
 export function sessionReducer(state: Session, action: SessionAction): Session {
   switch (action.type) {
+    case "restore": {
+      const base: Session = { ...freshSession(action.threadId, state.userId), turn: 1, messages: [], traces: [{ turn: 1, nodes: [] }] };
+      const restored = action.events.reduce((value, event) => sessionReducer(value, { type: "event", event }), base);
+      return { ...restored, busy: false, lastNode: action.waiting ? "checkin_question" : restored.lastNode,
+        status: action.waiting ? '请回答上面的随访问题（回复"取消"可退出）' : "已切换到保存的会话，可以继续提问。" };
+    }
     case "followup":
       return action.threadId === state.threadId && action.userId === state.userId
         ? { ...state, followup: action.value } : state;

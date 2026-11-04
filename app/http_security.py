@@ -101,7 +101,7 @@ def attach_security(application, router, resource_path, version_headers):
             if not resource:
                 continue
             admin = resource.startswith("/admin/")
-            personal = resource in {"/chat", "/history", "/followup", "/auth/me"} or resource.startswith("/tools/")
+            personal = resource in {"/chat", "/history", "/followup", "/auth/me", "/tasks"} or resource.startswith(("/tools/", "/tasks/"))
             for method, operation in methods.items():
                 if method not in {"get", "post", "patch", "delete", "put"}:
                     continue
@@ -135,7 +135,7 @@ def attach_security(application, router, resource_path, version_headers):
         store = application.state.auth_store
         required = application.state.auth_required
         admin = bool(resource and (resource == "/admin" or resource.startswith("/admin/")))
-        personal = bool(resource and (resource in {"/chat", "/history", "/followup"} or resource.startswith("/tools/")))
+        personal = bool(resource and (resource in {"/chat", "/history", "/followup", "/tasks"} or resource.startswith(("/tools/", "/tasks/"))))
         audited = required and bool(admin or personal or (resource and resource.startswith("/auth/")))
         actor = None
         try:
