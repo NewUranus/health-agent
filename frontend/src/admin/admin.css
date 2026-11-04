@@ -56,3 +56,12 @@
 
 .admin-account-option { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 0; }
 .admin-account-option small, .admin-account-ids { display: block; overflow-wrap: anywhere; color: #64748b; }
+
+.log-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin: 20px 0; }
+.log-filters label { display: flex; flex-direction: column; gap: 6px; }
+.log-filters input, .log-filters select { min-width: 0; padding: 9px; border: 1px solid #ccd7dd; border-radius: 6px; }
+.log-table { overflow-x: auto; margin-top: 16px; }
+.log-table table { width: 100%; border-collapse: collapse; }
+.log-table td, .log-table th { text-align: left; padding: 12px; border-bottom: 1px solid #dde5e9; vertical-align: top; }
+.log-explorer pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow: auto; font-size: 12px; }
+.log-span { padding: 12px; margin-top: 10px; border-left: 3px solid #25857a; background: #f3f8f7; overflow-wrap: anywhere; }

@@ -29,6 +29,8 @@ from app.task_api import attach_task_api
 from app.knowledge_archive import attach_knowledge_archive
 from app.conversations import attach_conversations
 from app.operations import attach_operations
+from app.log_api import attach_log_api
+from app.telemetry import runtime as telemetry_runtime, TraceMiddleware
 from app.runtime_config import settings, record as record_config
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -113,25 +115,26 @@ def create_app():
 
     @asynccontextmanager
     async def lifespan(application):
-        if required:
-            application.state.auth_store = await asyncio.to_thread(AuthStore)
-            await asyncio.to_thread(application.state.auth_store.setup)
-            application.state.login_slots = asyncio.Semaphore(2)
-            application.state.task_store = TaskStore(application.state.auth_store)
-            await asyncio.to_thread(application.state.task_store.setup)
-            await asyncio.to_thread(record_config, application.state.auth_store, runtime)
-            application.state.approval_store = ApprovalStore(application.state.auth_store)
-            await asyncio.to_thread(application.state.approval_store.setup)
-        async with HealthAgent(mock=mock) as agent:
-            application.state.agent = agent
-            runner = TaskRunner(application.state.task_store, agent, workers=runtime["HEALTH_AGENT_TASK_WORKERS"], timeout=task_timeout) if required and embedded_worker == "embedded" else None
-            if runner:
-                await runner.start()
-            try:
-                yield
-            finally:
+        with telemetry_runtime("api"):
+            if required:
+                application.state.auth_store = await asyncio.to_thread(AuthStore)
+                await asyncio.to_thread(application.state.auth_store.setup)
+                application.state.login_slots = asyncio.Semaphore(2)
+                application.state.task_store = TaskStore(application.state.auth_store)
+                await asyncio.to_thread(application.state.task_store.setup)
+                await asyncio.to_thread(record_config, application.state.auth_store, runtime)
+                application.state.approval_store = ApprovalStore(application.state.auth_store)
+                await asyncio.to_thread(application.state.approval_store.setup)
+            async with HealthAgent(mock=mock) as agent:
+                application.state.agent = agent
+                runner = TaskRunner(application.state.task_store, agent, workers=runtime["HEALTH_AGENT_TASK_WORKERS"], timeout=task_timeout) if required and embedded_worker == "embedded" else None
                 if runner:
-                    await runner.close()
+                    await runner.start()
+                try:
+                    yield
+                finally:
+                    if runner:
+                        await runner.close()
 
     application = FastAPI(
         title="HealthPilot API V1", version="1.0.0",
@@ -144,11 +147,13 @@ def create_app():
     application.mount("/static", StaticFiles(directory=ROOT / "web"), name="static")
     attach_security(application, api_v1, v1_resource_path,
                     {"X-API-Version": API_VERSION, "X-Agent-Version": HealthAgent.version})
+    application.add_middleware(TraceMiddleware)
     attach_task_api(api_v1)
     attach_approval_api(api_v1)
     attach_knowledge_archive(api_v1)
     attach_conversations(api_v1)
     attach_operations(api_v1)
+    attach_log_api(api_v1)
 
     @application.exception_handler(KnowledgeError)
     async def knowledge_error(request: Request, exc):

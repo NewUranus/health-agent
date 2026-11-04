@@ -19,6 +19,7 @@ from app.memory import memory_backend
 from app.rag import Retriever
 from app.knowledge import MemoryKnowledgeBase, PgKnowledgeBase
 from app.http_security import request_id_context
+from app.telemetry import span, current, emit
 from app.user_lock import user_execution_lock
 from app.knowledge_access import knowledge_scope, evidence_refs
 from app.model_gateway import model_run, save_usage
@@ -85,7 +86,7 @@ class HealthAgent:
         user_id = user_id or thread_id
         lock = self._locks.setdefault(user_id, asyncio.Lock())
         async with lock, user_execution_lock(user_id):
-            with knowledge_scope(user_id), model_run() as usage:
+            with span("agent.run"), knowledge_scope(user_id), model_run() as usage:
                 try:
                     async for event in self._stream(thread_id, message, user_id, web_search=web_search):
                         yield event
@@ -108,23 +109,11 @@ class HealthAgent:
         reply_refs = []
         def record(event):
             with path.open("a", encoding="utf-8") as file:
-                # 文档原文只通过事件返回页面，不写入轨迹日志。
-                logged = {**event}
-                if event.get("data", {}).get("chunks"):
-                    logged["data"] = {**event["data"], "chunks": [
-                        {k: v for k, v in chunk.items() if k in ("id", "page", "score")} for chunk in event["data"]["chunks"]]}
-                if event.get("type") == "message":
-                    logged = {"type": "message", "content_omitted": True}
-                if event.get("data", {}).get("web_search"):
-                    # 搜索词与网址可能含用户信息，网络轨迹仅保存状态和数量。
-                    logged["data"] = {key: event["data"][key] for key in
-                                      ("web_search", "web_failed", "web_read_count", "web_skipped") if key in event["data"]}
-                if request_id_context.get():
-                    logged["request_id"] = request_id_context.get()
-                if user_id.startswith("account:"):
-                    # 登录模式只记录执行元数据，健康参数和工具结果留在受控会话中。
-                    logged = {key: value for key, value in logged.items()
-                              if key in ("type", "node", "agent", "ms", "request_id", "content_omitted")}
+                # 所有模式均只保留元数据，健康正文和工具参数不落日志。
+                logged = {key: value for key, value in event.items() if key in ("type", "node", "agent", "ms")}
+                logged.update(current())
+                emit("agent.event", node=event.get("node"), status=event.get("type"), duration_ms=event.get("ms"),
+                     level="ERROR" if event.get("type") == "error" else "INFO")
                 file.write(json.dumps(logged, ensure_ascii=False) + "\n")
             return event
         try:

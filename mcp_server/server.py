@@ -1,6 +1,7 @@
 """通过标准输入输出暴露确定性健康工具和公开网页工具。"""
 from mcp.server.mcpserver import MCPServer
 from app import tools_core
+from app.telemetry import bind, extract, span, runtime
 from app.web_tools import search_web, read_web_document
 
 server = MCPServer("health-tools", log_level="WARNING")
@@ -12,5 +13,21 @@ server.tool(name="bp_category", description="按中国高血压指南给出血�
 server.tool(name="simulate_intervention", description="用风险公式估算戒烟、血压或胆固醇改变后的风险，不代表实际获益。")(tools_core.simulate_intervention)
 server.tool(name="project_trajectory", description="假设其他因素不变，推演年龄增加后的风险；跳过超过 74 岁的点。")(tools_core.project_trajectory)
 
+async def trace_tools(ctx, call_next):
+    if ctx.method != "tools/call":
+        return await call_next(ctx)
+    parent = extract((ctx.meta or {}).get("healthpilot", {}))
+    name = (ctx.params or {}).get("name", "unknown")
+    allowed = {"search_web", "read_web_document", "cvd_risk", "bmi", "bp_category", "simulate_intervention", "project_trajectory"}
+    with bind(**parent), span("mcp.execute", kind="server", tool=name if name in allowed else "unknown") as fields:
+        result = await call_next(ctx)
+        if getattr(result, "is_error", False) or (isinstance(result, dict) and result.get("isError")):
+            fields["status"] = "error"
+        return result
+
+
+server.middleware.append(trace_tools)
+
 if __name__ == "__main__":
-    server.run(transport="stdio")
+    with runtime("mcp"):
+        server.run(transport="stdio")

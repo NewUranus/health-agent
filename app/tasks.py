@@ -8,6 +8,7 @@ import uuid
 
 from app.auth import AuthFailure, digest
 from app.http_security import request_id_context
+from app.telemetry import bind, carrier, extract, span, traced, emit
 from app.task_context import TaskExecution, task_execution
 from app.database import schema_lock_sync
 
@@ -32,6 +33,7 @@ class TaskStore:
                 "CREATE INDEX IF NOT EXISTS hp_tasks_queue ON hp_tasks(status, created_at)",
                 "CREATE INDEX IF NOT EXISTS hp_tasks_user ON hp_tasks(user_id, created_at)",
                 "CREATE INDEX IF NOT EXISTS hp_tasks_conversation ON hp_tasks(user_id, thread_id, created_at)",
+                "CREATE TABLE IF NOT EXISTS hp_task_traces (task_id TEXT PRIMARY KEY REFERENCES hp_tasks(id), context TEXT NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS hp_task_events (task_id TEXT NOT NULL REFERENCES hp_tasks(id), seq INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(task_id, seq))",
                 "CREATE TABLE IF NOT EXISTS hp_task_slots (user_id TEXT PRIMARY KEY REFERENCES hp_users(id), task_id TEXT NOT NULL REFERENCES hp_tasks(id))",
                 "CREATE TABLE IF NOT EXISTS hp_task_effects (task_id TEXT NOT NULL REFERENCES hp_tasks(id), kind TEXT NOT NULL, payload_hash TEXT NOT NULL, committed_at BIGINT NOT NULL, PRIMARY KEY(task_id, kind))",
@@ -74,6 +76,7 @@ class TaskStore:
         execute("INSERT INTO hp_task_events VALUES (?, ?, ?)",
                 (task_id, previous + 1, json.dumps(event, ensure_ascii=False)))
 
+    @traced("queue.submit", kind="producer")
     def submit(self, user_id, key, payload, request_id):
         serialized = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
         payload_hash = digest(serialized)
@@ -97,6 +100,7 @@ class TaskStore:
                 raise AuthFailure(409, "IDEMPOTENCY_CONFLICT", "同一幂等键对应不同请求，请勿修改后重用。")
             created = row["id"] == task_id
             if created:
+                execute("INSERT INTO hp_task_traces VALUES (?, ?)", (task_id, json.dumps(carrier())))
                 suffix = " FOR UPDATE" if self.db.url else ""
                 conversation = execute("SELECT archived FROM hp_conversations WHERE user_id = ? AND thread_id = ?" + suffix, (user_id, payload["thread_id"])).fetchone()
                 if conversation and conversation["archived"]:
@@ -105,6 +109,11 @@ class TaskStore:
                         (uuid.uuid4().hex, user_id, payload["thread_id"], "健康会话", now))
                 self.db._audit(execute, user_id, "task.submitted", task_id, request_id, 202)
             return self.public(row), created
+
+    def trace_context(self, task_id):
+        with self.db.connection() as execute:
+            row = execute("SELECT context FROM hp_task_traces WHERE task_id = ?", (task_id,)).fetchone()
+        return extract(json.loads(row["context"])) if row else {}
 
     def get(self, task_id, user_id):
         with self.db.connection() as execute:
@@ -243,7 +252,7 @@ class TaskRunner:
             try:
                 await asyncio.to_thread(self.heartbeat_worker)
             except Exception as exc:
-                logger.error("Worker 心跳写入失败 type=%s", type(exc).__name__)
+                emit("worker.heartbeat.failed", level="ERROR", error_type=type(exc).__name__)
 
     async def start(self):
         await asyncio.to_thread(self.heartbeat_worker)
@@ -272,10 +281,20 @@ class TaskRunner:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.error("任务消费者故障 type=%s", type(exc).__name__)
+                emit("worker.consumer.failed", level="ERROR", error_type=type(exc).__name__)
                 await asyncio.sleep(1)
 
     async def run(self, job):
+        parent = await asyncio.to_thread(self.store.trace_context, job["id"])
+        parent.update(task_id=job["id"], request_id=job["request_id"])
+        with bind(**parent), span("worker.execute", kind="consumer",
+                queue_wait_ms=max(0, (time.time_ns() - job["created_at"]) / 1000000)) as fields:
+            await self._run(job)
+            result = await asyncio.to_thread(self.store.get, job["id"], job["user_id"])
+            fields["status"] = "error" if result["status"] in {"failed", "timed_out", "interrupted"} else result["status"]
+            fields["code"] = result.get("error_code")
+
+    async def _run(self, job):
         task_id, token = job["id"], job["worker_token"]
         context = request_id_context.set(job["request_id"])
         execution_context = task_execution.set(TaskExecution(task_id, token, job["user_id"]))
@@ -330,7 +349,7 @@ class TaskRunner:
             execution.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await execution
-            logger.error("任务执行失败 task_id=%s type=%s", task_id, type(exc).__name__)
+            emit("task.execution.failed", level="ERROR", error_type=type(exc).__name__)
             await asyncio.to_thread(self.store.finish, task_id, token, "failed", "TASK_EXECUTION_FAILED", "任务执行失败，请核对已有记录。")
         finally:
             watcher.cancel()

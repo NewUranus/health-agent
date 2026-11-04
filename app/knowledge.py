@@ -1,4 +1,6 @@
 """草稿、发布与可检索知识库；向量优先，失败时退回 BM25。"""
+from app.telemetry import traced, emit
+
 import asyncio
 import copy
 import hashlib
@@ -159,6 +161,7 @@ class KnowledgeBase:
         except Exception:
             raise KnowledgeError('向量生成失败，文档保持草稿。') from None
 
+    @traced("knowledge.search")
     async def search(self, query, k=4, min_similarity=None, *, document_id=None):
         if k <= 0:
             return []
@@ -167,12 +170,12 @@ class KnowledgeBase:
             try:
                 vector = await self.query_vector(query)
             except Exception:
-                logger.warning('向量查询失败，本次退回 BM25')
+                emit("knowledge.fallback", level="WARNING", reason="embedding_failed", status="bm25")
             else:
                 threshold = self.min_similarity if min_similarity is None else min_similarity
                 return await self.vector_search(vector, k, threshold, document_id=document_id)
         else:
-            logger.warning('未配置向量模型，本次使用 BM25')
+            emit("knowledge.fallback", reason="embedding_disabled", status="bm25")
         return await asyncio.to_thread(bm25, await self.published_rows(document_id=document_id), query, k)
 
     async def valid_evidence(self, chunks):

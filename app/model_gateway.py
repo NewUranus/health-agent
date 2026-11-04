@@ -1,4 +1,5 @@
 """模型调用限额、并发保护、短期熔断与最小化用量记录。"""
+from app.telemetry import span
 import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -92,39 +93,41 @@ class ModelGateway:
             run.calls += 1
             started = time.monotonic()
             record = {"model": model, "scene": scene.get(), "status": "failed", "input_tokens": None, "output_tokens": None}
-            acquired = False
-            try:
-                await asyncio.wait_for(self.control.slots.acquire(), timeout=2)
-                acquired = True
-                check = permission_check.get()
-                if check is not None and not await check():
-                    raise EvidenceChanged("资料访问范围已变化，请重新获取依据。")
-                async with asyncio.timeout(35):
-                    response = await client.ainvoke(messages)
-                metadata = getattr(response, "usage_metadata", None) or {}
-                record.update(status="succeeded", input_tokens=metadata.get("input_tokens"), output_tokens=metadata.get("output_tokens"))
-                self.control.failures[model] = 0
-                self.control.open_until.pop(model, None)
-                return response
-            except EvidenceChanged:
-                record["status"] = "access_changed"
-                raise
-            except asyncio.CancelledError:
-                record["status"] = "cancelled"
-                raise
-            except Exception as exc:
-                # 仅记录分类；异常正文可能含提供商请求或密钥，不能落库。
-                record["status"] = "busy" if not acquired else "timeout" if isinstance(exc, TimeoutError) else "failed"
-                count = self.control.failures.get(model, 0) + 1
-                if acquired:
-                    self.control.failures[model] = count
-                if acquired and count >= 3:
-                    self.control.open_until[model] = time.monotonic() + 30
-            finally:
-                if acquired:
-                    self.control.slots.release()
-                record["duration_ms"] = int((time.monotonic() - started) * 1000)
-                run.records.append(record)
+            with span("model.attempt", kind="client", model=model, scene=scene.get(), attempt=run.calls) as trace:
+                acquired = False
+                try:
+                    await asyncio.wait_for(self.control.slots.acquire(), timeout=2)
+                    acquired = True
+                    check = permission_check.get()
+                    if check is not None and not await check():
+                        raise EvidenceChanged("资料访问范围已变化，请重新获取依据。")
+                    async with asyncio.timeout(35):
+                        response = await client.ainvoke(messages)
+                    metadata = getattr(response, "usage_metadata", None) or {}
+                    record.update(status="succeeded", input_tokens=metadata.get("input_tokens"), output_tokens=metadata.get("output_tokens"))
+                    self.control.failures[model] = 0
+                    self.control.open_until.pop(model, None)
+                    return response
+                except EvidenceChanged:
+                    record["status"] = "access_changed"
+                    raise
+                except asyncio.CancelledError:
+                    record["status"] = "cancelled"
+                    raise
+                except Exception as exc:
+                    # 仅记录分类；异常正文可能含提供商请求或密钥，不能落库。
+                    record["status"] = "busy" if not acquired else "timeout" if isinstance(exc, TimeoutError) else "failed"
+                    count = self.control.failures.get(model, 0) + 1
+                    if acquired:
+                        self.control.failures[model] = count
+                    if acquired and count >= 3:
+                        self.control.open_until[model] = time.monotonic() + 30
+                finally:
+                    if acquired:
+                        self.control.slots.release()
+                    record["duration_ms"] = int((time.monotonic() - started) * 1000)
+                    run.records.append(record)
+                    trace.update(status="ok" if record["status"] == "succeeded" else "cancelled" if record["status"] == "cancelled" else "error", reason=record["status"], input_tokens=record["input_tokens"], output_tokens=record["output_tokens"])
         raise ModelUnavailable("模型暂不可用，已转入确定性降级流程。")
 
 

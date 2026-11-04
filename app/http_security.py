@@ -16,14 +16,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.auth import AuthFailure, AuthStore, COOKIE_NAME, SESSION_SECONDS
 from app.knowledge_access import principal
+from app.telemetry import emit
 
 request_id_context = ContextVar("request_id", default="")
 logger = logging.getLogger(__name__)
-access_logger = logging.getLogger("healthpilot.access")
-if not access_logger.handlers:
-    access_logger.addHandler(logging.StreamHandler())
-access_logger.setLevel(logging.INFO)
-access_logger.propagate = False
+
 
 
 class LoginRequest(BaseModel):
@@ -138,7 +135,7 @@ def attach_security(application, router, resource_path, version_headers):
     async def boundary(request: Request, call_next):
         started = time.perf_counter()
         resource = resource_path(request.url.path)
-        request.state.request_id = uuid.uuid4().hex
+        request.state.request_id = getattr(request.state, "request_id", None) or uuid.uuid4().hex
         request.state.user = None
         context = request_id_context.set(request.state.request_id)
         store = application.state.auth_store
@@ -181,7 +178,7 @@ def attach_security(application, router, resource_path, version_headers):
         except AuthFailure as exc:
             response = error_response(request, exc.status, exc.message, exc.code)
         except Exception as exc:
-            logger.error("请求失败 request_id=%s type=%s", request.state.request_id, type(exc).__name__)
+            emit("http.failed", level="ERROR", error_type=type(exc).__name__)
             response = error_response(request, 500, "服务暂时无法完成请求，请联系管理员。")
         finally:
             request_id_context.reset(context)
@@ -191,15 +188,14 @@ def attach_security(application, router, resource_path, version_headers):
                 await asyncio.to_thread(store.audit, actor, "http.response", resource, request.state.request_id, response.status_code)
             except Exception:
                 # 已执行的操作不可隐瞒；记录审计故障并停止返回业务数据。
-                logger.error("审计写入失败 request_id=%s", request.state.request_id)
+                emit("audit.unavailable", level="ERROR")
                 response = error_response(request, 503, "审计服务暂不可用，请联系管理员核对操作结果。", "AUDIT_UNAVAILABLE")
         response.headers["X-Request-ID"] = request.state.request_id
         if resource:
             response.headers.update(version_headers)
             response.headers["Cache-Control"] = "no-store"
-        access_logger.info(json.dumps({"event": "http.response_headers", "request_id": request.state.request_id,
-            "route": getattr(request.scope.get("route"), "path", "unmatched"), "method": request.method,
-            "status": response.status_code, "headers_duration_ms": round((time.perf_counter() - started) * 1000)}, ensure_ascii=False))
+        emit("http.response.headers", route=getattr(request.scope.get("route"), "path", "unmatched"), method=request.method,
+             status_code=response.status_code, duration_ms=round((time.perf_counter() - started) * 1000))
         return response
 
     @router.get("/auth/me", response_model=SessionInfo, summary="查看当前登录状态")

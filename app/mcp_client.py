@@ -3,6 +3,8 @@ import asyncio
 import copy
 import json
 import sys
+import os
+from app.telemetry import span, carrier, emit
 from collections import OrderedDict
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -23,7 +25,8 @@ class MCPClient:
     async def __aenter__(self):
         self.stack = AsyncExitStack()
         try:
-            params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"], cwd=str(ROOT))
+            params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"], cwd=str(ROOT),
+                env={key: value for key, value in os.environ.items() if key == "DATABASE_URL" or key.startswith("HEALTH_AGENT_LOG_") or key == "HEALTH_AGENT_RELEASE"})
             reader, writer = await self.stack.enter_async_context(stdio_client(params))
             self.session = await self.stack.enter_async_context(ClientSession(reader, writer))
             await self.session.initialize()
@@ -49,6 +52,7 @@ class MCPClient:
             return {"tool": name, "args": args, "result": result, "via": "mcp", "cached": False}
         key = (name, json.dumps(args, sort_keys=True, ensure_ascii=False, allow_nan=False))
         cached = key in self.cache or key in self._inflight
+        emit("mcp.cache", tool=name, cached=cached)
         if key in self.cache:
             self.cache.move_to_end(key)
             result = copy.deepcopy(self.cache[key])
@@ -67,13 +71,14 @@ class MCPClient:
         return {"tool": name, "args": args, "result": result, "via": "mcp", "cached": cached}
 
     async def _invoke(self, name, args):
-        if self.session is None:
-            raise RuntimeError("MCP 连接未启动")
-        response = await self.session.call_tool(name, args)
-        if response.is_error:
-            raise ValueError("工具参数无效，请检查年龄范围、数值与必填字段")
-        result = json.loads(next(c.text for c in response.content if c.type == "text"))
-        return result["result"] if isinstance(result, dict) and set(result) == {"result"} else result
+        with span("mcp.call", kind="client", tool=name):
+            if self.session is None:
+                raise RuntimeError("MCP 连接未启动")
+            response = await self.session.call_tool(name, args, meta={"healthpilot": carrier()})
+            if response.is_error:
+                raise ValueError("工具参数无效，请检查年龄范围、数值与必填字段")
+            result = json.loads(next(c.text for c in response.content if c.type == "text"))
+            return result["result"] if isinstance(result, dict) and set(result) == {"result"} else result
 
     async def call_tool(self, name, args):
         return (await self.call_with_trace(name, args))["result"]

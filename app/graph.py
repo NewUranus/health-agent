@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+from app.telemetry import span, emit
 import re
 from dataclasses import asdict
 from decimal import Decimal, ROUND_HALF_UP
@@ -76,7 +77,7 @@ def result(data, **state):
 
 def mark_degraded(data, node, exc):
     """记录降级原因；只记异常类型，异常文本可能带上请求内容。"""
-    logger.warning("%s 节点模型调用失败，已降级：%s", node, type(exc).__name__)
+    emit("agent.fallback", level="WARNING", node=node, error_type=type(exc).__name__, status="degraded")
     data.update(degraded=True, degraded_reason=type(exc).__name__)
 
 
@@ -408,7 +409,8 @@ def build_graph(mcp, store, kb, llm, mock, checkpointer):
 
     def wrapped(name):
         async def execute(state):
-            update = await getattr(nodes, name)(state)
+            with span("agent.node", node=name):
+                update = await getattr(nodes, name)(state)
             if "reply" in update:
                 chunks = update.get("retrieved", state.get("retrieved", [])) if name in {"answer", "followup"} else []
                 update["reply_evidence"] = update.get("reply_evidence", evidence_refs(chunks))

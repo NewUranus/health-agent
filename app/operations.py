@@ -8,6 +8,7 @@ from fastapi import Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 from app.auth import AuthFailure
+from app.telemetry import status as log_status
 
 
 def require_database(request):
@@ -126,4 +127,9 @@ def attach_operations(router):
             lines.append(f'healthpilot_tasks{{status={json.dumps(status)}}} {count}')
         for name, value in {"workers": len(data["workers"]), "queue_oldest_seconds": data["oldest_pending_seconds"], "stale_tasks": data["stale_tasks"], "admission_paused": int(data["admission_paused"])}.items():
             lines.extend([f"# TYPE healthpilot_{name} gauge", f"healthpilot_{name} {value}"])
+        logs = await asyncio.to_thread(log_status)
+        for name, value in {"log_buffer_pending": logs.get("pending"), "log_dropped_total": logs.get("dropped"),
+                "log_export_unavailable": int(bool(logs.get("export_error")))}.items():
+            if value is not None:
+                lines.extend([f"# TYPE healthpilot_{name} gauge", f"healthpilot_{name} {value}"])
         return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")

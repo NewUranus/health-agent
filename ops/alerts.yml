@@ -22,3 +22,23 @@ groups:
           severity: warning
         annotations:
           summary: "HealthPilot 存在租约过期任务"
+      - alert: HealthPilotLogExportUnavailable
+        expr: healthpilot_log_export_unavailable > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HealthPilot 日志中心补传持续失败"
+      - alert: HealthPilotLogBufferGrowing
+        expr: healthpilot_log_buffer_pending > 10000
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HealthPilot 日志本地缓冲积压"
+      - alert: HealthPilotLogDropped
+        expr: delta(healthpilot_log_dropped_total[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "HealthPilot 日志发生丢弃，请检查磁盘和日志中心"
