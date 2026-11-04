@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import "./admin.css";
 import { AdminProblem, ApprovalDialog, ApprovalHistory, type Approval, type AccessPolicy } from "./Approvals";
 
+import { KnowledgeArchive, TextImport } from "./KnowledgeArchive";
 import { KnowledgePolicy, ModelUsage } from "./Governance";
 
 type Document = {
@@ -115,7 +116,7 @@ export default function AdminApp() {
       <button className="admin-primary" type="submit">登录</button>
     </form> : <>
       <nav role="tablist" aria-label="后台功能" className="admin-tabs">
-        {["文档", "向量库", "检索测试", "确认记录", "模型用量"].map(name => <button key={name} role="tab" aria-selected={tab === name}
+        {["文档", "向量库", "检索测试", "确认记录", "模型用量", "版本档案", "文本导入"].map(name => <button key={name} role="tab" aria-selected={tab === name}
           aria-controls="admin-content" onClick={() => { setTab(name); setError(""); }}>{name}</button>)}
       </nav>
       <section role="tabpanel" id="admin-content" aria-label={tab}>
@@ -124,6 +125,8 @@ export default function AdminApp() {
         {tab === "检索测试" && <SearchTest api={api} documents={documents} reportError={reportError} clearError={() => setError("")} />}
         {tab === "确认记录" && <ApprovalHistory api={api} onChanged={refresh} />}
         {tab === "模型用量" && <ModelUsage api={api} />}
+        {tab === "版本档案" && <KnowledgeArchive api={api} />}
+        {tab === "文本导入" && <TextImport api={api} onChanged={refresh} />}
       </section>
     </>}
   </main>;

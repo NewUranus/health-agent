@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 from app.knowledge import KnowledgeError, now
 from app.auth import AuthFailure
+from app.knowledge_archive import entry, save
 
 
 @asynccontextmanager
@@ -86,6 +87,11 @@ async def apply_review(kb, doc_id, action, expected_digest, finalize, *, access=
             else:
                 await conn.execute("DELETE FROM knowledge_documents WHERE id = %s", (doc_id,))
                 result = {"ok": True}
+            if action == "delete":
+                await conn.execute("DELETE FROM knowledge_archives WHERE document_id = %s", (doc_id,))
+            else:
+                for item in [document, *replaced, result]:
+                    await save(conn, entry(item, action))
             # 知识变更、审批终态和执行审计共用当前数据库事务。
             await finalize(conn, result)
         else:
@@ -106,14 +112,21 @@ async def apply_review(kb, doc_id, action, expected_digest, finalize, *, access=
             else:
                 del documents[doc_id]
                 result = {"ok": True}
+            archives = copy.deepcopy(kb.archives)
+            if action == "delete":
+                archives = {key: value for key, value in archives.items() if value["document_id"] != doc_id}
+            else:
+                for item in [document, *replaced, result]:
+                    snapshot = entry(item, action)
+                    archives.setdefault(snapshot["id"], snapshot)
             finalization = asyncio.create_task(finalize(None, result))
             try:
                 await asyncio.shield(finalization)
             except asyncio.CancelledError:
                 # SQLite 提交不能被线程取消；确认其结果后同步内存，避免成功记录与内存脱节。
                 await finalization
-                kb.documents = documents
+                kb.documents, kb.archives = documents, archives
                 raise
             # 本地内存模式只提供进程内一致性，不宣称数据库持久化。
-            kb.documents = documents
+            kb.documents, kb.archives = documents, archives
         return result

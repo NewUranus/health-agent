@@ -33,7 +33,7 @@ export function KnowledgePolicy({ api, initial, busy, onSubmit }: {
   </section>;
 }
 
-type UsageGroup = { model: string; scene: string; status: string; calls: number; input_tokens: number | null; output_tokens: number | null; duration_ms: number; unknown_usage_calls: number };
+type UsageGroup = { model: string; scene: string; status: string; calls: number; input_tokens: number | null; output_tokens: number | null; duration_ms: number; unknown_usage_calls: number; cost_microusd?: number | null; priced_calls?: number };
 const statuses: Record<string, string> = { succeeded: "成功", failed: "失败", timeout: "超时", cancelled: "取消", busy: "并发繁忙", access_changed: "资料权限已变化" };
 export function ModelUsage({ api }: { api: AdminApi }) {
   const [groups, setGroups] = useState<UsageGroup[] | null>(null);
@@ -47,13 +47,14 @@ export function ModelUsage({ api }: { api: AdminApi }) {
     return () => controller.abort();
   }, [api, refresh]);
   return <section className="admin-panel"><h2>最近七天模型用量</h2>
-    <p>按模型和场景汇总调用。Token 由提供商返回；缺失值不当作零。未接入价格表，不估算金额。模拟模式和向量模型不计入。</p>
+    <p>按模型和场景汇总调用。Token 由提供商返回；缺失值不当作零。配置价格表后显示美元估算，未定价调用不计入金额；以提供商账单为准。模拟模式和向量模型不计入。</p>
     <button onClick={() => setRefresh(value => value + 1)}>刷新模型用量</button>
     {error && <p role="alert">{error}</p>}
     {!groups && !error && <p role="status">正在读取…</p>}
     {groups?.length === 0 && <p>暂无模型调用记录。</p>}
     <ul className="admin-list">{groups?.map(row => <li key={`${row.model}:${row.scene}:${row.status}`}><strong>{row.model}</strong> · {row.scene} · {statuses[row.status] ?? row.status}
       <p>{row.calls} 次调用 · 已知输入 Token {row.input_tokens ?? "未知"} · 已知输出 Token {row.output_tokens ?? "未知"} · 用量缺失 {row.unknown_usage_calls} 次</p>
+      <p>已定价 {row.priced_calls ?? 0} 次 · 美元估算 {row.cost_microusd == null ? "未知" : (row.cost_microusd / 1000000).toFixed(6)}</p>
       <p>累计耗时 {(row.duration_ms / 1000).toFixed(2)} 秒</p>
     </li>)}</ul>
   </section>;

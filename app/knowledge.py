@@ -80,6 +80,7 @@ class KnowledgeBase:
     backend = 'memory'
 
     def __init__(self, embedder=None, min_similarity=None):
+        self.archives = {}
         self.embedder = embedder
         self.min_similarity = float(os.getenv('RAG_MIN_SIMILARITY', '0.44')) if min_similarity is None else min_similarity
         self._query_vectors = OrderedDict()
@@ -414,6 +415,8 @@ class PgKnowledgeBase(KnowledgeBase):
         from app.database import schema_lock
         async with schema_lock(self.url), self.connection() as conn:
             await conn.execute('CREATE EXTENSION IF NOT EXISTS vector')
+            await conn.execute("CREATE TABLE IF NOT EXISTS knowledge_archives (id TEXT PRIMARY KEY, document_id BIGINT NOT NULL, payload JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())")
+            await conn.execute("CREATE INDEX IF NOT EXISTS knowledge_archives_document ON knowledge_archives(document_id)")
             await conn.execute('''CREATE TABLE IF NOT EXISTS knowledge_documents (
                 id BIGSERIAL PRIMARY KEY, title TEXT NOT NULL, source TEXT NOT NULL, version TEXT NOT NULL,
                 filename TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('draft', 'published')),

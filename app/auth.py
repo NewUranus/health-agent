@@ -82,6 +82,7 @@ class AuthStore:
                 "CREATE INDEX IF NOT EXISTS hp_audit_request ON hp_audit(request_id)",
                 "CREATE TABLE IF NOT EXISTS hp_model_usage (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES hp_users(id), task_id TEXT, request_id TEXT NOT NULL, at BIGINT NOT NULL, scene TEXT NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL, input_tokens BIGINT, output_tokens BIGINT, duration_ms BIGINT NOT NULL)",
                 "CREATE INDEX IF NOT EXISTS hp_model_usage_at ON hp_model_usage(at)",
+                "CREATE TABLE IF NOT EXISTS hp_model_costs (usage_id TEXT PRIMARY KEY REFERENCES hp_model_usage(id) ON DELETE CASCADE, cost_microusd BIGINT NOT NULL, pricing_version TEXT NOT NULL)",
             ):
                 execute(statement)
 

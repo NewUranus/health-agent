@@ -318,3 +318,11 @@ cd frontend && npm ci && npm test
 正式账号调用记录写入 `hp_model_usage`，关联用户、任务（直接聊天可为空）、请求、模型及提示场景版本，只保存用量与状态，不保存提示正文、密钥或异常正文。仅统计提供商返回的 Token，缺失不当作零；后台显示缺失次数。记录在本轮退出时批量写入，进程强制退出可能丢失尚未落库的用量，因此不是计费账本。模拟模型、向量模型、提供商价格表和账单核对不在本批统计范围。
 
 新增验证：`verification/test_governance.py`、`verification/test_governance_postgres.py`、`frontend/verification/governance.test.tsx`。检索质量提升（混合召回、重排）、持续评测门禁、完整版本归档、实名多级审批、分布式模型配额和费用预算仍需后续建设。
+
+### B4 补充：版本档案、文本导入与定价
+
+后台新增“版本档案”“文本导入”。经确认的发布、撤回和权限调整会将变更前后原文归档；同标题旧文档仍按规格从生效库删除，但档案保留供管理员查询。显式删除文档同时清除该文档档案。档案不参与问答，不向普通用户开放，也不会追溯恢复升级前已删除的内容。纯文本/Markdown 通过 `/api/v1/admin/text-documents` 导入为草稿，仍需核对并确认发布。
+
+可选 `QWEN_MODEL_ROUTES` JSON 将 `extract`、`answer`、`advise`、`intent` 映射到同供应商模型名。各场景共用单轮预算和并发限制。可选 `HEALTH_AGENT_MODEL_PRICES` JSON 按模型配置 `input_per_million`、`output_per_million`（每百万 Token 的美元价格），`HEALTH_AGENT_PRICING_VERSION` 标记价格版本。只有 Token 和单价都齐全才记录微美元估算；历史记录不随价格变更重算，金额仅供统计，不能代替实际账单。按 `docs/ADMIN.md` 保留向量优先策略，不引入已被规格排除的混合检索。
+
+本轮按用户要求仅执行 Python 编译与前端构建，功能验收由用户进行。

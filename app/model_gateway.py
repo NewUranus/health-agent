@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 import os
+import json
 import time
 import uuid
 
@@ -60,6 +61,9 @@ class ModelGateway:
         concurrency = int(os.getenv("HEALTH_AGENT_LLM_CONCURRENCY", "4"))
         if not 1 <= self.max_calls <= 100 or not 1000 <= self.max_chars <= 500000 or not 1 <= concurrency <= 32:
             raise ValueError("模型调用限额配置超出范围。")
+        self.routes = json.loads(os.getenv("QWEN_MODEL_ROUTES", "{}"))
+        if not isinstance(self.routes, dict) or any(key not in {"extract", "answer", "advise", "intent"} or not isinstance(value, str) or not value or len(value) > 200 for key, value in self.routes.items()):
+            raise ValueError("QWEN_MODEL_ROUTES 场景或模型标识无效。")
         self.control = control or Control(concurrency)
 
     def __getattr__(self, name):
@@ -76,7 +80,9 @@ class ModelGateway:
                 return await self.ainvoke(messages)
         if sum(len(str(message.content)) for message in messages) > self.max_chars:
             raise ModelUnavailable("模型输入超过本轮允许范围。")
-        for client, model in [(self.client, self.model), (self.fallback, self.fallback_model)]:
+        routed = self.routes.get(scene.get().split(":", 1)[0])
+        primary = self.client.bind(model=routed) if routed and routed != self.model else self.client
+        for client, model in [(primary, routed or self.model), (self.fallback, self.fallback_model)]:
             if client is None:
                 continue
             if self.control.open_until.get(model, 0) > time.monotonic():
@@ -126,12 +132,18 @@ def save_usage(user_id, task_id, request_id, records):
     if not records or not user_id.startswith("account:"):
         return
     from app.auth import AuthStore
+    from app.model_pricing import prices, cost
+    table = prices()
     database = AuthStore()
     with database.connection() as execute:
         for record in records:
+            ident = uuid.uuid4().hex
             execute("INSERT INTO hp_model_usage VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (uuid.uuid4().hex, user_id[8:], task_id, request_id, int(time.time()), record["scene"], record["model"],
+                (ident, user_id[8:], task_id, request_id, int(time.time()), record["scene"], record["model"],
                  record["status"], record["input_tokens"], record["output_tokens"], record["duration_ms"]))
+            amount = cost(record, table)
+            if amount is not None:
+                execute("INSERT INTO hp_model_costs VALUES (?, ?, ?)", (ident, amount, os.getenv("HEALTH_AGENT_PRICING_VERSION", "local-v1")))
 
 
 permission_check = ContextVar("model_permission_check", default=None)

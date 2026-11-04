@@ -26,6 +26,7 @@ from app.approvals import ApprovalStore, attach_approval_api
 from app.http_security import attach_security, auth_required, current_identity, error_response, ErrorInfo
 from app.tasks import TaskRunner, TaskStore
 from app.task_api import attach_task_api
+from app.knowledge_archive import attach_knowledge_archive
 
 ROOT = Path(__file__).resolve().parent.parent
 API_VERSION = "v1"
@@ -140,6 +141,7 @@ def create_app():
                     {"X-API-Version": API_VERSION, "X-Agent-Version": HealthAgent.version})
     attach_task_api(api_v1)
     attach_approval_api(api_v1)
+    attach_knowledge_archive(api_v1)
 
     @application.exception_handler(KnowledgeError)
     async def knowledge_error(request: Request, exc):
@@ -235,7 +237,7 @@ def create_app():
             return {"groups": [], "currency_cost": None}
         def read():
             with application.state.auth_store.connection() as execute:
-                return [dict(row) for row in execute("SELECT model, scene, status, COUNT(*) AS calls, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(duration_ms) AS duration_ms, SUM(CASE WHEN input_tokens IS NULL OR output_tokens IS NULL THEN 1 ELSE 0 END) AS unknown_usage_calls FROM hp_model_usage WHERE at >= ? GROUP BY model, scene, status", (int(time.time()) - 7 * 86400,)).fetchall()]
+                return [dict(row) for row in execute("SELECT model, scene, status, COUNT(*) AS calls, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(duration_ms) AS duration_ms, SUM((SELECT cost_microusd FROM hp_model_costs c WHERE c.usage_id = hp_model_usage.id)) AS cost_microusd, SUM(CASE WHEN EXISTS (SELECT 1 FROM hp_model_costs c WHERE c.usage_id = hp_model_usage.id) THEN 1 ELSE 0 END) AS priced_calls, SUM(CASE WHEN input_tokens IS NULL OR output_tokens IS NULL THEN 1 ELSE 0 END) AS unknown_usage_calls FROM hp_model_usage WHERE at >= ? GROUP BY model, scene, status", (int(time.time()) - 7 * 86400,)).fetchall()]
         return {"groups": await asyncio.to_thread(read), "currency_cost": None}
 
     @api_v1.get("/admin/documents/{doc_id}")
