@@ -1,0 +1,26 @@
+# 与根目录 docker-compose.yml 组合；不修改受保护的部署文件。
+services:
+  app:
+    image: ${HEALTHPILOT_IMAGE:?必须设置经过构建的镜像版本}
+    environment:
+      HEALTH_AGENT_TASK_WORKER: external
+      HEALTH_AGENT_RELEASE: ${HEALTHPILOT_IMAGE}
+    healthcheck:
+      test: ['CMD', 'python', '-c', 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/api/v1/ready", timeout=5)']
+      interval: 20s
+      timeout: 6s
+      retries: 3
+      start_period: 60s
+  worker:
+    image: ${HEALTHPILOT_IMAGE:?必须设置经过构建的镜像版本}
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://agent:${PG_PASSWORD}@db:5432/agent
+      HEALTH_AGENT_TASK_WORKER: external
+      HEALTH_AGENT_RELEASE: ${HEALTHPILOT_IMAGE}
+    command: ['python', '-m', 'app.worker']
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 45s

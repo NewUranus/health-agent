@@ -6,3 +6,6 @@ __pycache__
 .pytest_cache
 eval/results
 frontend/node_modules
+runs
+backups
+ops/.state

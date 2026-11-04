@@ -28,6 +28,8 @@ from app.tasks import TaskRunner, TaskStore
 from app.task_api import attach_task_api
 from app.knowledge_archive import attach_knowledge_archive
 from app.conversations import attach_conversations
+from app.operations import attach_operations
+from app.runtime_config import settings, record as record_config
 
 ROOT = Path(__file__).resolve().parent.parent
 API_VERSION = "v1"
@@ -99,6 +101,7 @@ def create_app():
     load_dotenv(ROOT / ".env")
     mock = os.getenv("HEALTH_AGENT_MOCK") == "1"
     required = auth_required(mock)
+    runtime = settings()
     task_timeout = int(os.getenv("HEALTH_AGENT_TASK_TIMEOUT", "300"))
     if not 1 <= task_timeout <= 3600:
         raise ValueError("HEALTH_AGENT_TASK_TIMEOUT 须为 1–3600 秒。")
@@ -116,11 +119,12 @@ def create_app():
             application.state.login_slots = asyncio.Semaphore(2)
             application.state.task_store = TaskStore(application.state.auth_store)
             await asyncio.to_thread(application.state.task_store.setup)
+            await asyncio.to_thread(record_config, application.state.auth_store, runtime)
             application.state.approval_store = ApprovalStore(application.state.auth_store)
             await asyncio.to_thread(application.state.approval_store.setup)
         async with HealthAgent(mock=mock) as agent:
             application.state.agent = agent
-            runner = TaskRunner(application.state.task_store, agent, timeout=task_timeout) if required and embedded_worker == "embedded" else None
+            runner = TaskRunner(application.state.task_store, agent, workers=runtime["HEALTH_AGENT_TASK_WORKERS"], timeout=task_timeout) if required and embedded_worker == "embedded" else None
             if runner:
                 await runner.start()
             try:
@@ -144,6 +148,7 @@ def create_app():
     attach_approval_api(api_v1)
     attach_knowledge_archive(api_v1)
     attach_conversations(api_v1)
+    attach_operations(api_v1)
 
     @application.exception_handler(KnowledgeError)
     async def knowledge_error(request: Request, exc):

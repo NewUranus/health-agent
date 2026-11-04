@@ -1,5 +1,7 @@
 """HTTP 身份边界、统一错误和请求审计，不参与健康判断。"""
 import asyncio
+import time
+import json
 from contextvars import ContextVar
 import hmac
 import logging
@@ -17,6 +19,11 @@ from app.knowledge_access import principal
 
 request_id_context = ContextVar("request_id", default="")
 logger = logging.getLogger(__name__)
+access_logger = logging.getLogger("healthpilot.access")
+if not access_logger.handlers:
+    access_logger.addHandler(logging.StreamHandler())
+access_logger.setLevel(logging.INFO)
+access_logger.propagate = False
 
 
 class LoginRequest(BaseModel):
@@ -129,6 +136,7 @@ def attach_security(application, router, resource_path, version_headers):
 
     @application.middleware("http")
     async def boundary(request: Request, call_next):
+        started = time.perf_counter()
         resource = resource_path(request.url.path)
         request.state.request_id = uuid.uuid4().hex
         request.state.user = None
@@ -189,6 +197,9 @@ def attach_security(application, router, resource_path, version_headers):
         if resource:
             response.headers.update(version_headers)
             response.headers["Cache-Control"] = "no-store"
+        access_logger.info(json.dumps({"event": "http.response_headers", "request_id": request.state.request_id,
+            "route": getattr(request.scope.get("route"), "path", "unmatched"), "method": request.method,
+            "status": response.status_code, "headers_duration_ms": round((time.perf_counter() - started) * 1000)}, ensure_ascii=False))
         return response
 
     @router.get("/auth/me", response_model=SessionInfo, summary="查看当前登录状态")

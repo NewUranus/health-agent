@@ -20,6 +20,10 @@ LEASE_SECONDS = 30
 class TaskStore:
     def __init__(self, database):
         self.db = database
+        from app.runtime_config import settings
+        config = settings()
+        self.queue_limit = config["HEALTH_AGENT_QUEUE_LIMIT"]
+        self.user_queue_limit = config["HEALTH_AGENT_USER_QUEUE_LIMIT"]
 
     def setup(self):
         with schema_lock_sync(self.db.url), self.db.connection() as execute:
@@ -33,6 +37,13 @@ class TaskStore:
                 "CREATE TABLE IF NOT EXISTS hp_task_effects (task_id TEXT NOT NULL REFERENCES hp_tasks(id), kind TEXT NOT NULL, payload_hash TEXT NOT NULL, committed_at BIGINT NOT NULL, PRIMARY KEY(task_id, kind))",
                 "CREATE TABLE IF NOT EXISTS hp_conversations (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES hp_users(id), thread_id TEXT NOT NULL, title TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0, updated_at BIGINT NOT NULL, UNIQUE(user_id, thread_id))",
                 "CREATE INDEX IF NOT EXISTS hp_conversations_user ON hp_conversations(user_id, archived, updated_at)",
+                "CREATE TABLE IF NOT EXISTS hp_queue_gate (id INTEGER PRIMARY KEY)",
+                "INSERT INTO hp_queue_gate VALUES (1) ON CONFLICT (id) DO NOTHING",
+                "CREATE TABLE IF NOT EXISTS hp_system_settings (name TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                "INSERT INTO hp_system_settings VALUES ('admission_paused', '0') ON CONFLICT (name) DO NOTHING",
+                "CREATE TABLE IF NOT EXISTS hp_task_priorities (task_id TEXT PRIMARY KEY REFERENCES hp_tasks(id), priority INTEGER NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS hp_workers (id TEXT PRIMARY KEY, slots INTEGER NOT NULL, last_seen BIGINT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS hp_config_snapshots (id TEXT PRIMARY KEY, at BIGINT NOT NULL, payload TEXT NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS hp_task_reviews (task_id TEXT PRIMARY KEY REFERENCES hp_tasks(id), disposition TEXT NOT NULL, reviewed_at BIGINT NOT NULL, request_id TEXT NOT NULL)",
             ):
                 execute(sql)
@@ -68,6 +79,17 @@ class TaskStore:
         payload_hash = digest(serialized)
         task_id, now = uuid.uuid4().hex, time.time_ns()
         with self.db.connection() as execute:
+            execute("SELECT id FROM hp_queue_gate WHERE id = 1" + (" FOR UPDATE" if self.db.url else "")).fetchone()
+            existing = execute(self.select_public + " WHERE user_id = ? AND idempotency_key = ?", (user_id, key)).fetchone()
+            if existing:
+                if existing["payload_hash"] != payload_hash:
+                    raise AuthFailure(409, "IDEMPOTENCY_CONFLICT", "同一幂等键对应不同请求，请勿修改后重用。")
+                return self.public(existing), False
+            if execute("SELECT value FROM hp_system_settings WHERE name = 'admission_paused'").fetchone()["value"] == "1":
+                raise AuthFailure(503, "ADMISSION_PAUSED", "服务暂时停止接收新任务，请稍后重试。已有任务继续执行。")
+            counts = execute("SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN user_id = ? THEN 1 ELSE 0 END), 0) AS owned FROM hp_tasks WHERE status IN ('pending', 'running')", (user_id,)).fetchone()
+            if counts["total"] >= self.queue_limit or counts["owned"] >= self.user_queue_limit:
+                raise AuthFailure(429, "QUEUE_CAPACITY", "任务队列已达到容量限制，请等待已有任务完成后再提交。")
             execute("INSERT INTO hp_tasks (id, user_id, idempotency_key, payload_hash, thread_id, payload, status, created_at, updated_at, request_id) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?) ON CONFLICT (user_id, idempotency_key) DO NOTHING",
                     (task_id, user_id, key, payload_hash, payload["thread_id"], serialized, now, now, request_id))
             row = execute(self.select_public + " WHERE user_id = ? AND idempotency_key = ?", (user_id, key)).fetchone()
@@ -161,7 +183,7 @@ class TaskStore:
     def claim(self, worker_token):
         with self.db.connection() as execute:
             suffix = " FOR UPDATE SKIP LOCKED" if self.db.url else ""
-            row = execute("SELECT * FROM hp_tasks WHERE status = 'pending' AND user_id NOT IN (SELECT user_id FROM hp_task_slots) ORDER BY created_at LIMIT 1" + suffix).fetchone()
+            row = execute("SELECT * FROM hp_tasks WHERE status = 'pending' AND user_id NOT IN (SELECT user_id FROM hp_task_slots) ORDER BY COALESCE((SELECT priority FROM hp_task_priorities p WHERE p.task_id = hp_tasks.id), 0) DESC, created_at LIMIT 1" + suffix).fetchone()
             if not row:
                 return None
             acquired = execute("INSERT INTO hp_task_slots VALUES (?, ?) ON CONFLICT (user_id) DO NOTHING",
@@ -204,15 +226,39 @@ class TaskRunner:
         self.store, self.agent = store, agent
         self.workers, self.timeout = workers, timeout
         self.loops = []
+        self.worker_id = uuid.uuid4().hex
+        self.heartbeat_task = None
+
+    def heartbeat_worker(self, remove=False):
+        with self.store.db.connection() as execute:
+            if remove:
+                execute("DELETE FROM hp_workers WHERE id = ?", (self.worker_id,))
+            else:
+                execute("INSERT INTO hp_workers VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET last_seen = excluded.last_seen, slots = excluded.slots", (self.worker_id, self.workers, int(time.time())))
+                execute("DELETE FROM hp_workers WHERE last_seen < ?", (int(time.time()) - 86400,))
+
+    async def heartbeat_loop(self):
+        while True:
+            await asyncio.sleep(5)
+            try:
+                await asyncio.to_thread(self.heartbeat_worker)
+            except Exception as exc:
+                logger.error("Worker 心跳写入失败 type=%s", type(exc).__name__)
 
     async def start(self):
+        await asyncio.to_thread(self.heartbeat_worker)
+        self.heartbeat_task = asyncio.create_task(self.heartbeat_loop())
         await asyncio.to_thread(self.store.recover_stale)
         self.loops = [asyncio.create_task(self.loop()) for _ in range(self.workers)]
 
     async def close(self):
+        if self.heartbeat_task:
+            self.heartbeat_task.cancel()
+            await asyncio.gather(self.heartbeat_task, return_exceptions=True)
         for loop in self.loops:
             loop.cancel()
         await asyncio.gather(*self.loops, return_exceptions=True)
+        await asyncio.to_thread(self.heartbeat_worker, True)
 
     async def loop(self):
         while True:

@@ -1,0 +1,24 @@
+groups:
+  - name: healthpilot
+    rules:
+      - alert: HealthPilotWorkerUnavailable
+        expr: healthpilot_workers == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HealthPilot 无有效 Worker 心跳"
+      - alert: HealthPilotQueueDelayed
+        expr: healthpilot_queue_oldest_seconds > 60
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HealthPilot 队列等待超过一分钟"
+      - alert: HealthPilotStaleTask
+        expr: healthpilot_stale_tasks > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HealthPilot 存在租约过期任务"

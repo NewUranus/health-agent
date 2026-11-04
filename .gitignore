@@ -6,3 +6,5 @@ __pycache__/
 eval/results/
 runs/
 node_modules/
+backups/
+ops/.state/
