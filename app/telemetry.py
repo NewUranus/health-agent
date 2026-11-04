@@ -103,8 +103,11 @@ def extract(values):
 
 
 def emit(event, *, level="INFO", message="", **attributes):
-    logging.getLogger("healthpilot").log(getattr(logging, level, logging.INFO), event,
-        extra={"telemetry_event": event, "telemetry_message": message, "telemetry_attributes": safe_attributes(attributes)})
+    fields = safe_attributes(attributes)
+    # 文本日志也保留异常分类；不拼接异常正文或堆栈。
+    text = f"{event} error_type={fields['error_type']}" if fields.get("error_type") else event
+    logging.getLogger("healthpilot").log(getattr(logging, level, logging.INFO), text,
+        extra={"telemetry_event": event, "telemetry_message": message, "telemetry_attributes": fields})
 
 
 @contextmanager
