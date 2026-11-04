@@ -6,6 +6,8 @@ import { HistoryPanel } from "./components/HistoryPanel";
 import { MessageContent } from "./components/MessageContent";
 import { SimulationPanel } from "./components/SimulationPanel";
 import { TracePanel } from "./components/TracePanel";
+import { ExecutionProgress } from "./components/ExecutionProgress";
+import { ConversationsPanel } from "./components/ConversationsPanel";
 import { TasksPanel } from "./components/TasksPanel";
 import { runTask } from "./lib/tasks";
 import { createSseParser } from "./lib/sse";
@@ -22,10 +24,13 @@ export default function App() {
   const auth = useContext(AuthContext);
   const [session, dispatch] = useReducer(sessionReducer, undefined, () => initialSession(auth.user?.id));
   const [mode, setMode] = useState("正在连接");
+  const [activeTask, setActiveTask] = useState<string | null>(null);
+  const [conversationArchived, setConversationArchived] = useState(false);
+  const [cancelMessage, setCancelMessage] = useState("");
   const [input, setInput] = useState("");
   const [webSearch, setWebSearch] = useState(false);
   const [traceVisible, setTraceVisible] = useState(true);
-  const [panelTab, setPanelTab] = useState<"trace" | "simulate" | "history" | "tasks">("trace");
+  const [panelTab, setPanelTab] = useState<"trace" | "simulate" | "history" | "tasks" | "conversations">("trace");
   const [highlighted, setHighlighted] = useState<string | null>(null);
   const [selection, setSelection] = useState(0);
   const messages = useRef<HTMLDivElement>(null);
@@ -70,7 +75,8 @@ export default function App() {
 
   async function send(text: string) {
     text = text.trim();
-    if (activeRequest.current || session.busy || !text) return;
+    if (activeRequest.current || session.busy || conversationArchived || !text) return;
+    setActiveTask(null); setCancelMessage("");
     const controller = new AbortController();
     activeRequest.current = controller;
     dispatch({ type: "send", text });
@@ -92,7 +98,7 @@ export default function App() {
         dispatch({ type: "event", event });
       };
       if (auth.user) {
-        await runTask({ thread_id: session.threadId, message: text, web_search: webSearch }, createId(), controller.signal, onEvent);
+        await runTask({ thread_id: session.threadId, message: text, web_search: webSearch }, createId(), controller.signal, onEvent, task => setActiveTask(task.id));
       } else {
         const response = await apiFetch("/api/chat", {
           method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
@@ -132,15 +138,25 @@ export default function App() {
       }
       if (activeRequest.current === controller) {
         activeRequest.current = null;
+        setActiveTask(null);
         dispatch({ type: "finish", status });
         textarea.current?.focus();
       }
     }
   }
 
+  async function stopTask() {
+    if (!activeTask) return;
+    try {
+      const response = await apiFetch(`/api/v1/tasks/${activeTask}/cancel`, { method: "POST" });
+      if (!response.ok) throw new Error("取消请求未完成，请到任务记录重试。");
+      setCancelMessage("已请求停止，正在等待当前步骤结束。已经保存的记录不会回滚。");
+    } catch (reason) { setCancelMessage(reason instanceof Error ? reason.message : "取消失败。"); }
+  }
+
   function reset(clearIdentity = false) {
     if (activeRequest.current || session.busy) return;
-    setWebSearch(false);
+    setWebSearch(false); setConversationArchived(false); setCancelMessage("");
     const userId = clearIdentity ? createId() : undefined;
     if (userId) saveUserId(userId);
     dispatch({ type: "reset", threadId: createId(), userId });
@@ -187,6 +203,7 @@ export default function App() {
               {traceVisible ? "收起轨迹 ↗" : "展开轨迹 ↙"}
             </button>
           </div>
+          <ExecutionProgress nodes={session.traces.at(-1)?.nodes ?? []} busy={session.busy} status={session.status} />
           <div className="messages" ref={messages} aria-live="polite" aria-relevant="additions">
             {session.messages.map((message, index) => <div className={`message-row ${message.role}`} key={index}>
               {message.role !== "user" && <span className="avatar" aria-hidden="true">✚</span>}
@@ -198,17 +215,20 @@ export default function App() {
             </div>)}
           </div>
           <div className="composer-wrap">
+            {conversationArchived && <p className="warning">此会话已归档，只能查看。请在会话列表恢复后重新打开，或新建会话。</p>}
+            {activeTask && <button type="button" onClick={() => void stopTask()}>停止当前任务</button>}
+            {cancelMessage && <p role="status">{cancelMessage}</p>}
             <label className="web-search-toggle">
               <input type="checkbox" checked={webSearch} disabled={session.busy} onChange={(event) => setWebSearch(event.target.checked)} />
               联网搜索 / 读取链接
             </label>
             {webSearch && <p className="web-search-note">本轮问题会发送给公开搜索网站；粘贴网址可直接读取。请勿填写个人身份信息。网络资料未经医学审核。</p>}
             <div className="examples" aria-label="试试这些示例">
-              {examples.map(([label, text]) => <button type="button" key={label} disabled={session.busy} onClick={() => void send(text)}>{label}</button>)}
+              {examples.map(([label, text]) => <button type="button" key={label} disabled={session.busy || conversationArchived} onClick={() => void send(text)}>{label}</button>)}
             </div>
             <form id="chat-form" onSubmit={(event) => { event.preventDefault(); void send(input); }}>
               <label htmlFor="message-input" className="sr-only">输入健康信息或问题</label>
-              <textarea id="message-input" ref={textarea} rows={2} maxLength={12000} required
+              <textarea id="message-input" disabled={conversationArchived} ref={textarea} rows={2} maxLength={12000} required
                 placeholder={webSearch ? "输入要搜索的健康主题，或粘贴公开网页 / PDF 链接…" : "告诉我你的健康情况，或问一个健康问题…"} value={input}
                 onChange={(event) => setInput(event.target.value)}
                 onKeyDown={(event) => {
@@ -216,7 +236,7 @@ export default function App() {
                     event.preventDefault(); void send(input);
                   }
                 }} />
-              <button className="send" type="submit" disabled={session.busy} aria-label={session.busy ? "处理中…" : "发送消息"}>
+              <button className="send" type="submit" disabled={session.busy || conversationArchived} aria-label={session.busy ? "处理中…" : "发送消息"}>
                 {session.busy ? "处理中…" : <>发送 <span aria-hidden="true">↑</span></>}
               </button>
             </form>
@@ -228,10 +248,17 @@ export default function App() {
             <button type="button" role="tab" aria-selected={panelTab === "trace"} onClick={() => setPanelTab("trace")}>Agent 轨迹<span>{traceCount}</span></button>
             <button type="button" role="tab" aria-selected={panelTab === "simulate"} onClick={() => setPanelTab("simulate")}>干预模拟</button>
             <button type="button" role="tab" aria-selected={panelTab === "history"} onClick={() => setPanelTab("history")}>随访记录</button>
+            {auth.user && <button type="button" role="tab" aria-selected={panelTab === "conversations"} onClick={() => setPanelTab("conversations")}>我的会话</button>}
             {auth.user && <button type="button" role="tab" aria-selected={panelTab === "tasks"} onClick={() => setPanelTab("tasks")}>任务记录</button>}
           </div>
+          {panelTab === "conversations" && auth.user && <ConversationsPanel busy={session.busy} onOpen={page => {
+            if (activeRequest.current) return;
+            dispatch({ type: "restore_conversation", threadId: page.conversation.thread_id, turns: page.turns });
+            setConversationArchived(Boolean(page.conversation.archived)); setInput(""); setHighlighted(null); setWebSearch(false);
+          }} />}
           {panelTab === "tasks" && auth.user && <TasksPanel busy={session.busy} onResume={(task, events) => {
-            if (session.busy) return;
+            if (activeRequest.current) return;
+            setConversationArchived(false);
             dispatch({ type: "restore", threadId: task.thread_id, events, waiting: task.status === "waiting_human" });
             setInput(""); setWebSearch(false); setHighlighted(null); setPanelTab("trace");
           }} />}

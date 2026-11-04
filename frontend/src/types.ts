@@ -25,6 +25,7 @@ export interface HistoryRecord {
 }
 
 export interface Source {
+  text?: string;
   document_id?: number | null;
   version?: string;
   revision?: number;

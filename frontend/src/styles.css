@@ -1213,3 +1213,13 @@ html {
 .saved-task time, .saved-task small { width: 100%; color: #687b70; overflow-wrap: anywhere; }
 .saved-task button, .task-list > button { border: 1px solid #cbd9d0; background: #fff; border-radius: 6px; padding: 5px 9px; cursor: pointer; }
 .saved-result { white-space: pre-wrap; overflow-wrap: anywhere; width: 100%; }
+
+.conversation-search { display: flex; gap: 8px; margin: 12px 0; }
+.conversation-search input, .saved-task input { min-width: 0; max-width: 100%; padding: 8px; border: 1px solid #d4dedb; border-radius: 8px; }
+.panel-tabs { flex-wrap: wrap; }
+.task-list { overflow-y: auto; }
+.execution-progress { margin: 8px 16px; padding: 10px; border: 1px solid #d4dedb; border-radius: 10px; max-height: 150px; overflow: auto; flex-shrink: 0; font-size: 12px; }
+.execution-progress ol { display: flex; flex-wrap: wrap; gap: 6px; padding: 0; list-style: none; }
+.execution-progress li { background: #eef5f1; border-radius: 7px; padding: 6px; }
+.execution-progress small { display: block; color: #60756b; }
+.source-text { white-space: pre-wrap; overflow-wrap: anywhere; }

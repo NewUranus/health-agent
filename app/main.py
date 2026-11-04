@@ -27,6 +27,7 @@ from app.http_security import attach_security, auth_required, current_identity, 
 from app.tasks import TaskRunner, TaskStore
 from app.task_api import attach_task_api
 from app.knowledge_archive import attach_knowledge_archive
+from app.conversations import attach_conversations
 
 ROOT = Path(__file__).resolve().parent.parent
 API_VERSION = "v1"
@@ -38,7 +39,7 @@ def v1_resource_path(path: str) -> str | None:
     for prefix in (API_PREFIX, "/api"):
         if path.startswith(prefix + "/"):
             resource = path[len(prefix):]
-            if resource.split("/", 2)[1] in {"health", "chat", "history", "followup", "tools", "admin", "auth", "tasks"}:
+            if resource.split("/", 2)[1] in {"health", "chat", "history", "followup", "tools", "admin", "auth", "tasks", "conversations", "ready"}:
                 return resource
     return None
 
@@ -142,6 +143,7 @@ def create_app():
     attach_task_api(api_v1)
     attach_approval_api(api_v1)
     attach_knowledge_archive(api_v1)
+    attach_conversations(api_v1)
 
     @application.exception_handler(KnowledgeError)
     async def knowledge_error(request: Request, exc):

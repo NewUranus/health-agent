@@ -27,12 +27,19 @@ class TaskStore:
                 "CREATE TABLE IF NOT EXISTS hp_tasks (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES hp_users(id), idempotency_key TEXT NOT NULL, payload_hash TEXT NOT NULL, thread_id TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, request_id TEXT NOT NULL, worker_token TEXT, lease_until BIGINT, cancel_requested INTEGER NOT NULL DEFAULT 0, error_code TEXT, UNIQUE(user_id, idempotency_key))",
                 "CREATE INDEX IF NOT EXISTS hp_tasks_queue ON hp_tasks(status, created_at)",
                 "CREATE INDEX IF NOT EXISTS hp_tasks_user ON hp_tasks(user_id, created_at)",
+                "CREATE INDEX IF NOT EXISTS hp_tasks_conversation ON hp_tasks(user_id, thread_id, created_at)",
                 "CREATE TABLE IF NOT EXISTS hp_task_events (task_id TEXT NOT NULL REFERENCES hp_tasks(id), seq INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(task_id, seq))",
                 "CREATE TABLE IF NOT EXISTS hp_task_slots (user_id TEXT PRIMARY KEY REFERENCES hp_users(id), task_id TEXT NOT NULL REFERENCES hp_tasks(id))",
                 "CREATE TABLE IF NOT EXISTS hp_task_effects (task_id TEXT NOT NULL REFERENCES hp_tasks(id), kind TEXT NOT NULL, payload_hash TEXT NOT NULL, committed_at BIGINT NOT NULL, PRIMARY KEY(task_id, kind))",
+                "CREATE TABLE IF NOT EXISTS hp_conversations (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES hp_users(id), thread_id TEXT NOT NULL, title TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0, updated_at BIGINT NOT NULL, UNIQUE(user_id, thread_id))",
+                "CREATE INDEX IF NOT EXISTS hp_conversations_user ON hp_conversations(user_id, archived, updated_at)",
                 "CREATE TABLE IF NOT EXISTS hp_task_reviews (task_id TEXT PRIMARY KEY REFERENCES hp_tasks(id), disposition TEXT NOT NULL, reviewed_at BIGINT NOT NULL, request_id TEXT NOT NULL)",
             ):
                 execute(sql)
+            rows = execute("SELECT user_id, thread_id, MAX(created_at) AS updated_at FROM hp_tasks t WHERE NOT EXISTS (SELECT 1 FROM hp_conversations c WHERE c.user_id = t.user_id AND c.thread_id = t.thread_id) GROUP BY user_id, thread_id").fetchall()
+            for row in rows:
+                execute("INSERT INTO hp_conversations VALUES (?, ?, ?, ?, 0, ?) ON CONFLICT (user_id, thread_id) DO NOTHING",
+                        (uuid.uuid4().hex, row["user_id"], row["thread_id"], "健康会话", row["updated_at"]))
 
     @staticmethod
     def public(row):
@@ -68,6 +75,12 @@ class TaskStore:
                 raise AuthFailure(409, "IDEMPOTENCY_CONFLICT", "同一幂等键对应不同请求，请勿修改后重用。")
             created = row["id"] == task_id
             if created:
+                suffix = " FOR UPDATE" if self.db.url else ""
+                conversation = execute("SELECT archived FROM hp_conversations WHERE user_id = ? AND thread_id = ?" + suffix, (user_id, payload["thread_id"])).fetchone()
+                if conversation and conversation["archived"]:
+                    raise AuthFailure(409, "CONVERSATION_ARCHIVED", "此会话已归档，请先在工作台恢复。")
+                execute("INSERT INTO hp_conversations VALUES (?, ?, ?, ?, 0, ?) ON CONFLICT (user_id, thread_id) DO UPDATE SET updated_at = excluded.updated_at",
+                        (uuid.uuid4().hex, user_id, payload["thread_id"], "健康会话", now))
                 self.db._audit(execute, user_id, "task.submitted", task_id, request_id, 202)
             return self.public(row), created
 

@@ -326,3 +326,16 @@ cd frontend && npm ci && npm test
 可选 `QWEN_MODEL_ROUTES` JSON 将 `extract`、`answer`、`advise`、`intent` 映射到同供应商模型名。各场景共用单轮预算和并发限制。可选 `HEALTH_AGENT_MODEL_PRICES` JSON 按模型配置 `input_per_million`、`output_per_million`（每百万 Token 的美元价格），`HEALTH_AGENT_PRICING_VERSION` 标记价格版本。只有 Token 和单价都齐全才记录微美元估算；历史记录不随价格变更重算，金额仅供统计，不能代替实际账单。按 `docs/ADMIN.md` 保留向量优先策略，不引入已被规格排除的混合检索。
 
 本轮按用户要求仅执行 Python 编译与前端构建，功能验收由用户进行。
+
+## 第五阶段 多会话工作台
+
+登录后的“我的会话”支持标题搜索、分页、重命名、归档/恢复、打开多轮历史和导出 Markdown。首次提交任务自动创建会话，升级时从已有任务补建会话索引。归档仅停止该会话的新任务提交，不删除历史，不取消正在运行的任务；重复幂等请求仍返回原任务。打开历史按 20 轮分页，继续提问始终使用服务端最新上下文，不会倒退服务端状态。
+
+- `GET /api/v1/conversations?archived=false&q=&offset=0`：本人会话，每页 30 条。
+- `PATCH /api/v1/conversations/{id}`：更新 `title` 或 `archived`。
+- `GET /api/v1/conversations/{id}/turns?before=游标&limit=20`：查询历史轮次，重新校验资料权限。
+- `GET /api/v1/conversations/{id}/export`：下载最近 50 轮 Markdown 和可见引用，超过 200 个事件的轮次提示去任务记录读取全文。
+
+所有入口提供 `/api/...` V1 兼容路径；每次按登录账号检查归属，导出不创建公开链接。导出文件包含个人对话，由下载者自行保管。原 `/chat` 演示路径不写入新工作台；正式登录前端使用 `/tasks`。
+
+对话新增“停止当前任务”、可折叠执行步骤与节点耗时；来源卡片可直接展开原文并定位高亮。不展示未经可靠校准的剩余时长。管理员与用户工作台继续使用独立鉴权；实名多级审批、组织角色与 SSO 需要组织模型及身份提供商接入，不能仅凭这些界面宣称已完成。

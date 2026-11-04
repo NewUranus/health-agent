@@ -1,4 +1,5 @@
 import type { FollowupStatus, Message, NodeData, Risk, ServerEvent, TraceTurn } from "../types";
+import type { ConversationTurn } from "./conversations";
 import { progressLabel } from "./progress";
 
 export const welcomeText = "你好，我是 HealthPilot。\n我们可以一起了解你的心血管健康，从年龄、性别和最近的血压开始。资料齐全后，我会提供风险评估、有来源的建议和随访计划。\n也可以点击下方示例，体验完整流程。";
@@ -34,6 +35,7 @@ interface Session {
 }
 
 export type SessionAction =
+  | { type: "restore_conversation"; threadId: string; turns: ConversationTurn[] }
   | { type: "send"; text: string }
   | { type: "event"; event: ServerEvent }
   | { type: "finish"; status: string }
@@ -57,6 +59,14 @@ function freshSession(threadId: string, userId: string): Session {
 
 export function sessionReducer(state: Session, action: SessionAction): Session {
   switch (action.type) {
+    case "restore_conversation": {
+      let restored = freshSession(action.threadId, state.userId);
+      for (const turn of action.turns) {
+        restored = sessionReducer(restored, { type: "send", text: turn.message });
+        for (const event of turn.events) restored = sessionReducer(restored, { type: "event", event });
+      }
+      return { ...restored, busy: false, status: "已读取保存的会话记录。继续提问时服务端会使用该会话的最新上下文。" };
+    }
     case "restore": {
       const base: Session = { ...freshSession(action.threadId, state.userId), turn: 1, messages: [], traces: [{ turn: 1, nodes: [] }] };
       const restored = action.events.reduce((value, event) => sessionReducer(value, { type: "event", event }), base);

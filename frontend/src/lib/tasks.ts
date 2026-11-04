@@ -15,7 +15,7 @@ export async function responseProblem(response: Response): Promise<Error> {
 }
 
 export async function runTask(payload: { thread_id: string; message: string; web_search: boolean }, key: string,
-  signal: AbortSignal, onEvent: (event: ServerEvent) => void) {
+  signal: AbortSignal, onEvent: (event: ServerEvent) => void, onSubmitted?: (task: SavedTask) => void) {
   let task: SavedTask | undefined;
   // 提交响应丢失时重用同一幂等键，服务端不会新建第二个任务。
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -32,6 +32,7 @@ export async function runTask(payload: { thread_id: string; message: string; web
     break;
   }
   if (!task?.id) throw new Error("连接响应无效，请在任务记录中核对提交结果。");
+  onSubmitted?.(task);
   let cursor = 0;
   for (let attempt = 0; attempt < 3; attempt++) {
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
