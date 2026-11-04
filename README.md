@@ -209,6 +209,30 @@ uv run python -m app.worker
 
 没有设置该变量时，这组集成测试会明确跳过。设置后每例创建唯一临时数据库、启动独立测试进程，并在结束时清理数据库与进程；不会读取 `.env` 中的生产数据库地址作为测试目标。只在测试数据库上运行。本轮本机集成验收不代表生产部署、容量、高可用或备份恢复已验收。
 
+## 第三阶段 知识变更确认与失败处理
+
+正式登录模式（`HEALTH_AGENT_AUTH_MODE=required`）下，发布知识和删除整份文档必须经过服务端确认。直接调用原 `/api/v1/admin/documents/{id}/publish` 或文档 DELETE 返回 `428 APPROVAL_REQUIRED`，两套 V1 路径一致；旧管理员客户端需要接入下述流程。Mock 免登录演示保留原操作方式，以兼容既有演示，不能将该模式用于真实用户服务。
+
+1. `POST /api/v1/admin/approvals`，提交 `{document_id, action: "publish" | "delete"}`，返回 `waiting_human` 确认单。摘要包含文档标题、版本、片段数、风险说明及发布时会被删除的旧文档。
+2. 人工核对后，`POST /api/v1/admin/approvals/{id}/decision`，提交 `{decision: "approve" | "reject", fingerprint}`。批准后同一请求自动继续执行；拒绝不改知识库。内容指纹必须使用服务端返回值。
+3. `GET /api/v1/admin/approvals` 查看当前管理员凭证下最近 50 条记录；`GET /api/v1/admin/approvals/{id}` 查询具体结果。重复批准已成功记录返回保存结果，执行中的重复请求返回 409，不会重复执行。
+
+这些接口沿用管理员 Bearer 鉴权，不向普通账号开放。确认单绑定当时的管理员凭证；口令变更后旧确认单不能继续使用，执行前再次校验当前权限。当前管理员仍为共享口令，审计主体是 `knowledge-admin`，不能识别具体自然人；这是一人单级确认，不是多人复核、角色审批或完整企业认证。
+
+确认有效期为 5 分钟，服务端拒绝任何过期执行，查询或决定时将过期状态落库；没有新增定时服务。执行阶段最多 120 秒。确认状态包含 `waiting_human / executing / succeeded / rejected / expired / invalidated / failed / uncertain`，与聊天任务的随访问答状态分开。内容、旧版本集合或权限变化会拒绝执行；进程退出后遗留的 `executing` 在有效期后标记 `uncertain`，须先核对结果，不自动重新执行。
+
+PostgreSQL 中，内容指纹校验在知识库写锁内进行，文档变更、审批成功状态与执行审计同事务提交；任何一步失败会回滚，包括同标题旧版本删除。确认单保留操作摘要及成功结果，需与其他知识数据一并考虑权限、留存和备份。SQLite + 内存知识库仅用于本地演示：进程内取消保持确认结果和内存一致，但进程崩溃或重启后不保证知识库持久化。
+
+后台新增“确认记录”标签页。发布遇到确认要求时显示核对窗口；删除仍保留原先的浏览器提醒，再展示服务端确认单。关闭窗口不会批准操作，可在有效期内从确认记录重新打开。
+
+失败任务处理：
+
+- `GET /api/v1/tasks?failed=true` 仅列出本人失败、取消、超时或中断任务；返回 `failure_category`、`health_committed` 与 `review_disposition`。
+- `POST /api/v1/tasks/{id}/review` 提交 `{disposition: "resolved" | "needs_support"}`，记录“已核对”或“需要人工协助”；重复相同决定不重复写审计。
+- 前端可过滤失败任务，并提示已保存或无法确认的健康记录。处理记录不会修改任务终态，也不会重新执行任务。`needs_support` 只是待处理标记，尚未发送通知或创建客服工单。
+
+B3 基础范围不包含多级审批、移动端确认、人工服务通知、自动失败重试或任意节点恢复。新增验收位于 `verification/test_approvals.py`、`verification/test_approvals_postgres.py` 和 `frontend/verification/approvals.test.tsx`。PostgreSQL 集成仍通过显式 `HEALTH_AGENT_TEST_POSTGRES` 使用临时数据库。
+
 ## 无需搜索密钥的联网功能
 
 聊天输入框上方可开启“联网搜索 / 读取链接”，默认关闭。开启后无需先填写风险评估档案，急症规则仍优先执行；正在进行的随访问诊需先完成或取消，再使用联网问答。

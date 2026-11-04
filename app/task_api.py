@@ -30,6 +30,13 @@ class TaskInfo(BaseModel):
     updated_at: int
     cancel_requested: bool
     health_committed: bool | None = None
+    failure_category: str | None = None
+    review_disposition: Literal["resolved", "needs_support"] | None = None
+
+
+class TaskReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    disposition: Literal["resolved", "needs_support"]
 
 
 class TaskList(BaseModel):
@@ -62,9 +69,14 @@ def attach_task_api(router):
         return task
 
     @router.get("/tasks", response_model=TaskList, summary="查看自己的最近任务")
-    async def list_tasks(request: Request, limit: int = Query(30, ge=1, le=100)):
+    async def list_tasks(request: Request, limit: int = Query(30, ge=1, le=100), failed: bool = False):
         store, user_id = require_tasks(request)
-        return {"tasks": await asyncio.to_thread(store.list, user_id, limit)}
+        return {"tasks": await asyncio.to_thread(store.list, user_id, limit, failed)}
+
+    @router.post("/tasks/{task_id}/review", response_model=TaskInfo, summary="记录本人失败任务的核对结果，不重新执行")
+    async def review_task(request: Request, task_id: str, body: TaskReview):
+        store, user_id = require_tasks(request)
+        return await asyncio.to_thread(store.review, task_id, user_id, body.disposition, request.state.request_id)
 
     @router.get("/tasks/{task_id}", response_model=TaskInfo, summary="查看任务状态")
     async def get_task(request: Request, task_id: str):

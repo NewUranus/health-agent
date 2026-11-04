@@ -13,6 +13,7 @@ from app.database import schema_lock_sync
 
 logger = logging.getLogger(__name__)
 TERMINAL = {"succeeded", "waiting_human", "failed", "cancelled", "timed_out", "interrupted"}
+FAILURES = {"failed", "cancelled", "timed_out", "interrupted"}
 LEASE_SECONDS = 30
 
 
@@ -29,6 +30,7 @@ class TaskStore:
                 "CREATE TABLE IF NOT EXISTS hp_task_events (task_id TEXT NOT NULL REFERENCES hp_tasks(id), seq INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(task_id, seq))",
                 "CREATE TABLE IF NOT EXISTS hp_task_slots (user_id TEXT PRIMARY KEY REFERENCES hp_users(id), task_id TEXT NOT NULL REFERENCES hp_tasks(id))",
                 "CREATE TABLE IF NOT EXISTS hp_task_effects (task_id TEXT NOT NULL REFERENCES hp_tasks(id), kind TEXT NOT NULL, payload_hash TEXT NOT NULL, committed_at BIGINT NOT NULL, PRIMARY KEY(task_id, kind))",
+                "CREATE TABLE IF NOT EXISTS hp_task_reviews (task_id TEXT PRIMARY KEY REFERENCES hp_tasks(id), disposition TEXT NOT NULL, reviewed_at BIGINT NOT NULL, request_id TEXT NOT NULL)",
             ):
                 execute(sql)
 
@@ -38,13 +40,15 @@ class TaskStore:
                 "created_at": row["created_at"] // 1_000_000,
                 "updated_at": row["updated_at"] // 1_000_000,
                 "cancel_requested": bool(row["cancel_requested"]),
-                "health_committed": bool(row["health_committed"]) if "health_committed" in row.keys() and row["health_committed"] is not None else None}
+                "health_committed": bool(row["health_committed"]) if "health_committed" in row.keys() and row["health_committed"] is not None else None,
+                "failure_category": {"failed": "execution", "cancelled": "cancelled", "timed_out": "timeout", "interrupted": "infrastructure"}.get(row["status"]),
+                "review_disposition": row["review_disposition"] if "review_disposition" in row.keys() else None}
 
     @property
     def select_public(self):
         # SQLite 任务与内存健康记录不在同一事务内，不能声称已确认持久化。
         committed = "EXISTS (SELECT 1 FROM hp_task_effects e WHERE e.task_id = hp_tasks.id)" if self.db.url else "NULL"
-        return f"SELECT hp_tasks.*, {committed} AS health_committed FROM hp_tasks"
+        return f"SELECT hp_tasks.*, {committed} AS health_committed, (SELECT disposition FROM hp_task_reviews r WHERE r.task_id = hp_tasks.id) AS review_disposition FROM hp_tasks"
 
     @staticmethod
     def _event(execute, task_id, event):
@@ -74,10 +78,27 @@ class TaskStore:
             raise AuthFailure(404, "TASK_NOT_FOUND", "任务不存在或无权访问。")
         return self.public(row)
 
-    def list(self, user_id, limit=30):
+    def list(self, user_id, limit=30, failed=False):
         with self.db.connection() as execute:
-            rows = execute(self.select_public + " WHERE user_id = ? ORDER BY created_at DESC LIMIT ?", (user_id, limit)).fetchall()
+            condition = " AND status IN ('failed', 'cancelled', 'timed_out', 'interrupted')" if failed else ""
+            rows = execute(self.select_public + " WHERE user_id = ?" + condition + " ORDER BY created_at DESC LIMIT ?", (user_id, limit)).fetchall()
         return [self.public(row) for row in rows]
+
+    def review(self, task_id, user_id, disposition, request_id):
+        if disposition not in {"resolved", "needs_support"}:
+            raise AuthFailure(422, "INVALID_REVIEW", "请选择已核对或需要人工协助。")
+        with self.db.connection() as execute:
+            row = self._lock_task(execute, task_id)
+            if not row or row["user_id"] != user_id:
+                raise AuthFailure(404, "TASK_NOT_FOUND", "任务不存在或无权访问。")
+            if row["status"] not in FAILURES:
+                raise AuthFailure(409, "TASK_NOT_FAILED", "只能记录失败、超时、中断或取消任务的处理结果。")
+            previous = execute("SELECT disposition FROM hp_task_reviews WHERE task_id = ?", (task_id,)).fetchone()
+            if not previous or previous["disposition"] != disposition:
+                execute("INSERT INTO hp_task_reviews VALUES (?, ?, ?, ?) ON CONFLICT(task_id) DO UPDATE SET disposition = excluded.disposition, reviewed_at = excluded.reviewed_at, request_id = excluded.request_id",
+                    (task_id, disposition, time.time_ns(), request_id))
+                self.db._audit(execute, user_id, "task.review." + disposition, task_id, request_id, 200)
+        return self.get(task_id, user_id)
 
     def events(self, task_id, user_id, after=0):
         task = self.get(task_id, user_id)

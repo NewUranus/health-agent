@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import "./admin.css";
+import { AdminProblem, ApprovalDialog, ApprovalHistory, type Approval } from "./Approvals";
 
 type Document = {
   id: number; title: string; source: string; version: string; filename: string;
@@ -66,7 +67,7 @@ export default function AdminApp() {
       throw new Error("密码错误");
     }
     const body = await response.json();
-    if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : "请求失败，请稍后重试。");
+    if (!response.ok) throw new AdminProblem(typeof body.detail === "string" ? body.detail : "请求失败，请稍后重试。", body.code);
     return body as T;
   }, [token]);
 
@@ -111,13 +112,14 @@ export default function AdminApp() {
       <button className="admin-primary" type="submit">登录</button>
     </form> : <>
       <nav role="tablist" aria-label="后台功能" className="admin-tabs">
-        {["文档", "向量库", "检索测试"].map(name => <button key={name} role="tab" aria-selected={tab === name}
+        {["文档", "向量库", "检索测试", "确认记录"].map(name => <button key={name} role="tab" aria-selected={tab === name}
           aria-controls="admin-content" onClick={() => { setTab(name); setError(""); }}>{name}</button>)}
       </nav>
       <section role="tabpanel" id="admin-content" aria-label={tab}>
         {tab === "文档" && <Documents api={api} documents={documents} refresh={refresh} reportError={reportError} clearError={() => setError("")} />}
         {tab === "向量库" && <VectorLibrary api={api} documents={documents} reportError={reportError} />}
         {tab === "检索测试" && <SearchTest api={api} documents={documents} reportError={reportError} clearError={() => setError("")} />}
+        {tab === "确认记录" && <ApprovalHistory api={api} onChanged={refresh} />}
       </section>
     </>}
   </main>;
@@ -135,6 +137,12 @@ function Documents({ api, documents, refresh, reportError, clearError }: Section
   const [dirty, setDirty] = useState<Set<string>>(new Set());
   const [paired, setPaired] = useState(false);
   const [uploadNotice, setUploadNotice] = useState("");
+  const [approval, setApproval] = useState<Approval | null>(null);
+
+  async function requestApproval(documentId: number, action: "publish" | "delete") {
+    setApproval(await api<Approval>("/approvals", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ document_id: documentId, action }) }));
+  }
 
   async function perform(action: () => Promise<void>) {
     clearError(); setBusy(true);
@@ -179,7 +187,12 @@ function Documents({ api, documents, refresh, reportError, clearError }: Section
     await perform(async () => {
       // 发布前保存仍在编辑的片段，保证发布的是屏幕上核对过的文本。
       for (const chunk of selected.chunks ?? []) if (dirty.has(chunk.id)) await save(chunk);
-      const result = await api<Document>(`/documents/${selected.id}/publish`, { method: "POST" });
+      let result: Document;
+      try { result = await api<Document>(`/documents/${selected.id}/publish`, { method: "POST" }); }
+      catch (reason) {
+        if (reason instanceof AdminProblem && reason.code === "APPROVAL_REQUIRED") { await requestApproval(selected.id, "publish"); return; }
+        throw reason;
+      }
       setSelected({ ...selected, ...result, chunks: result.chunks ?? selected.chunks });
       await refresh();
     });
@@ -187,6 +200,14 @@ function Documents({ api, documents, refresh, reportError, clearError }: Section
   }
 
   return <div className="admin-documents">
+    {approval && <ApprovalDialog key={approval.id} approval={approval} api={api} onClose={() => setApproval(null)} onDone={async row => {
+      setApproval(null);
+      if (row.status === "succeeded") {
+        if (row.action === "delete" && selected?.id === row.document_id) setSelected(null);
+        if (row.action === "publish") select(row.result as Document);
+      }
+      await refresh();
+    }} />}
     <div className="admin-panel">
       <h2>上传 PDF</h2><p className="admin-muted">支持文字版 PDF，最多 20MB、500 页。</p>
       <form onSubmit={upload} className="admin-upload">
@@ -213,7 +234,11 @@ function Documents({ api, documents, refresh, reportError, clearError }: Section
         {!document.builtin && <button disabled={busy} className="admin-danger" onClick={() => {
           if (!window.confirm(`确认删除“${document.title}”？删除后将无法检索。`)) return;
           void perform(async () => {
-            await api(`/documents/${document.id}`, { method: "DELETE" });
+            try { await api(`/documents/${document.id}`, { method: "DELETE" }); }
+            catch (reason) {
+              if (reason instanceof AdminProblem && reason.code === "APPROVAL_REQUIRED") { await requestApproval(document.id, "delete"); return; }
+              throw reason;
+            }
             if (selected?.id === document.id) setSelected(null);
             await refresh();
           });

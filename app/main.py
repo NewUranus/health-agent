@@ -20,7 +20,8 @@ from app.followup import plan_status
 from app.memory import load_followup, load_memory
 from app.ingest import IngestError, chunk_pages, clean_pages, parse_pdf
 from app.knowledge import KnowledgeError
-from app.auth import AuthStore, COOKIE_NAME
+from app.auth import AuthFailure, AuthStore, COOKIE_NAME
+from app.approvals import ApprovalStore, attach_approval_api
 from app.http_security import attach_security, auth_required, current_identity, error_response, ErrorInfo
 from app.tasks import TaskRunner, TaskStore
 from app.task_api import attach_task_api
@@ -112,6 +113,8 @@ def create_app():
             application.state.login_slots = asyncio.Semaphore(2)
             application.state.task_store = TaskStore(application.state.auth_store)
             await asyncio.to_thread(application.state.task_store.setup)
+            application.state.approval_store = ApprovalStore(application.state.auth_store)
+            await asyncio.to_thread(application.state.approval_store.setup)
         async with HealthAgent(mock=mock) as agent:
             application.state.agent = agent
             runner = TaskRunner(application.state.task_store, agent, timeout=task_timeout) if required and embedded_worker == "embedded" else None
@@ -130,11 +133,12 @@ def create_app():
     )
     application.state.auth_required = required
     application.state.auth_store = None
-    api_v1 = APIRouter(responses={status: {"model": ErrorInfo} for status in (400, 401, 403, 404, 409, 422, 429, 500, 503)})
+    api_v1 = APIRouter(responses={status: {"model": ErrorInfo} for status in (400, 401, 403, 404, 409, 422, 428, 429, 500, 503)})
     application.mount("/static", StaticFiles(directory=ROOT / "web"), name="static")
     attach_security(application, api_v1, v1_resource_path,
                     {"X-API-Version": API_VERSION, "X-Agent-Version": HealthAgent.version})
     attach_task_api(api_v1)
+    attach_approval_api(api_v1)
 
     @application.exception_handler(KnowledgeError)
     async def knowledge_error(request: Request, exc):
@@ -230,11 +234,15 @@ def create_app():
         return await application.state.agent.kb.delete_chunk(doc_id, chunk_id)
 
     @api_v1.post("/admin/documents/{doc_id}/publish")
-    async def publish(doc_id: int):
+    async def publish(request: Request, doc_id: int):
+        if required:
+            raise AuthFailure(428, "APPROVAL_REQUIRED", "发布会影响医学问答知识，请先核对确认单。")
         return await application.state.agent.kb.publish(doc_id)
 
     @api_v1.delete("/admin/documents/{doc_id}")
-    async def delete_document(doc_id: int):
+    async def delete_document(request: Request, doc_id: int):
+        if required:
+            raise AuthFailure(428, "APPROVAL_REQUIRED", "删除无法撤销，请先核对确认单。")
         await application.state.agent.kb.delete_document(doc_id)
         return {"ok": True}
 
