@@ -169,6 +169,7 @@ def create_app():
         return error_response(request, status, "参数格式或范围无效，请按照接口说明填写。")
 
     @application.get("/admin", include_in_schema=False)
+    @application.get("/login", include_in_schema=False)
     @application.get("/", include_in_schema=False)
     async def index():
         # 首页每次都向服务器确认版本；assets 的文件名带哈希，可以放心缓存

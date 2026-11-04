@@ -47,16 +47,25 @@ export function AuthGate({ children }: { children: ReactNode }) {
     void check(controller.signal);
     const storage = (event: StorageEvent) => { if (event.key === "healthpilot-auth-change") expire(); };
     const restore = (event: PageTransitionEvent) => { if (event.persisted) void check(); };
+    const navigate = () => { void check(); };
     window.addEventListener("storage", storage);
     window.addEventListener("pageshow", restore);
+    window.addEventListener("popstate", navigate);
     window.addEventListener("healthpilot-session-expired", expire);
     return () => {
       controller.abort(); generation.current++; setExpectedUser(null);
       window.removeEventListener("storage", storage);
       window.removeEventListener("pageshow", restore);
+      window.removeEventListener("popstate", navigate);
       window.removeEventListener("healthpilot-session-expired", expire);
     };
   }, [check, expire]);
+
+  useEffect(() => {
+    // 登录页与健康首页使用独立地址，替换记录避免返回已失效的页面。
+    const path = phase === "login" ? "/login" : phase === "ready" ? "/" : null;
+    if (path && window.location.pathname !== path) window.history.replaceState(null, "", path);
+  }, [phase]);
 
   useEffect(() => {
     if (!session?.expires_at) return;
@@ -90,7 +99,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
       const response = await fetch("/api/v1/auth/logout", { method: "POST", credentials: "same-origin",
         headers: { "X-HealthPilot-Request": "1" } });
       if (!response.ok) throw new Error();
-      generation.current++; setExpectedUser(null); setSession(null); setPhase("login"); notifyTabs();
+      generation.current++; setExpectedUser(null); setSession(null); setPassword(""); setPhase("login"); notifyTabs();
     } catch { setError("退出未完成，请检查网络后再次退出。"); }
     finally { setBusy(false); }
   }
