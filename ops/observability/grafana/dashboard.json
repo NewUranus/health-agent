@@ -1,0 +1,119 @@
+{
+  "uid": "healthpilot-operations",
+  "title": "HealthPilot 运行观测",
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": false,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "可观测性服务状态",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "healthpilot-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "up{job=~\"otel-collector|loki|tempo\"}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "任务数量",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "healthpilot-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "healthpilot_tasks",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "持久队列使用率",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "healthpilot-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "otelcol_exporter_queue_size / otelcol_exporter_queue_capacity",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "OTLP 导出失败记录",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "healthpilot-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "increase(healthpilot_otel_export_failed_records_total[5m])",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "运行日志（点击 TraceID 查看链路）",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "healthpilot-loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 24,
+        "h": 12
+      },
+      "targets": [
+        {
+          "expr": "{service_namespace=\"healthpilot\"}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

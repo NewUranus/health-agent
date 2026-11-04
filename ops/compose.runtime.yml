@@ -5,11 +5,6 @@ services:
     environment:
       HEALTH_AGENT_TASK_WORKER: external
       HEALTH_AGENT_RELEASE: ${HEALTHPILOT_IMAGE}
-      HEALTH_AGENT_LOG_DATABASE_URL: ${HEALTH_AGENT_LOG_DATABASE_URL:-}
-      HEALTH_AGENT_LOG_RETENTION_DAYS: ${HEALTH_AGENT_LOG_RETENTION_DAYS:-30}
-      HEALTH_AGENT_LOG_BUFFER_ROWS: ${HEALTH_AGENT_LOG_BUFFER_ROWS:-100000}
-    volumes:
-      - telemetry_api:/app/runs/logs
     logging:
       driver: json-file
       options:
@@ -28,22 +23,14 @@ services:
       DATABASE_URL: postgresql://agent:${PG_PASSWORD}@db:5432/agent
       HEALTH_AGENT_TASK_WORKER: external
       HEALTH_AGENT_RELEASE: ${HEALTHPILOT_IMAGE}
-      HEALTH_AGENT_LOG_DATABASE_URL: ${HEALTH_AGENT_LOG_DATABASE_URL:-}
-      HEALTH_AGENT_LOG_RETENTION_DAYS: ${HEALTH_AGENT_LOG_RETENTION_DAYS:-30}
-      HEALTH_AGENT_LOG_BUFFER_ROWS: ${HEALTH_AGENT_LOG_BUFFER_ROWS:-100000}
     command: ['python', '-m', 'app.worker']
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
     stop_grace_period: 45s
-    volumes:
-      - telemetry_worker:/app/runs/logs
     logging:
       driver: json-file
       options:
         max-size: '20m'
         max-file: '5'
-volumes:
-  telemetry_api:
-  telemetry_worker:

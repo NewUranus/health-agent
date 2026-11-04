@@ -5,13 +5,13 @@ type Log = { id: string; at: number; level: string; service: string; instance: s
   trace_id: string; span_id: string; parent_span_id: string; request_id: string; task_id: string;
   attributes: Record<string, string | number | boolean> };
 type Page = { records: Log[]; next_cursor: string | null; start: number; end: number };
-type Health = { central_available: boolean; central_backend?: string; pending?: number; dropped?: number; export_error?: string;
-  services: { service: string; last_seen: number }[] };
+type Health = { central_available: boolean; engine: string; configured: string[]; grafana_url: string | null;
+  export_error?: string; signals: Record<string, { last_success: number | null; failed_records: number; failed_batches: number; error: string | null }> };
 const time = (value: number) => new Date(value).toLocaleString();
-const label: Record<string, string> = { trace_id: "链路 ID", request_id: "请求 ID", task_id: "任务 ID", q: "关键词", event: "事件" };
+const label: Record<string, string> = { trace_id: "链路 ID", request_id: "请求 ID", task_id: "任务 ID", thread_id: "会话标识（脱敏）", user_hash: "用户标识（脱敏）", q: "关键词", event: "事件" };
 
 export function LogExplorer({ api }: { api: AdminApi }) {
-  const [filters, setFilters] = useState({ trace_id: "", request_id: "", task_id: "", q: "", event: "", service: "", level: "", hours: "24" });
+  const [filters, setFilters] = useState({ trace_id: "", request_id: "", task_id: "", thread_id: "", user_hash: "", q: "", event: "", service: "", level: "", hours: "24" });
   const [page, setPage] = useState<Page | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [error, setError] = useState("");
@@ -22,16 +22,23 @@ export function LogExplorer({ api }: { api: AdminApi }) {
   const [traceId, setTraceId] = useState("");
   const [traceCursor, setTraceCursor] = useState<string | null>(null);
   const controller = useRef<AbortController | null>(null);
-  useEffect(() => () => controller.current?.abort(), []);
+  useEffect(() => {
+    const request = new AbortController();
+    void api<Health>("/logs/status", { signal: request.signal }).then(state => { if (!request.signal.aborted) setHealth(state); })
+      .catch(e => { if (!request.signal.aborted) setError(e instanceof Error ? e.message : "无法读取采集状态"); });
+    return () => { request.abort(); controller.current?.abort(); };
+  }, [api]);
 
   async function load(params: string, history: string[]) {
     controller.current?.abort();
     const request = new AbortController(); controller.current = request;
     setBusy(true); setError("");
     try {
-      const [result, state] = await Promise.all([api<Page>(`/logs?${params}`, { signal: request.signal }), api<Health>("/logs/status", { signal: request.signal })]);
+      const [result, state] = await Promise.allSettled([api<Page>(`/logs?${params}`, { signal: request.signal }), api<Health>("/logs/status", { signal: request.signal })]);
       if (request.signal.aborted) return;
-      setPage(result); setHealth(state); setCursors(history);
+      if (state.status === "fulfilled") setHealth(state.value);
+      if (result.status === "rejected") throw result.reason;
+      setPage(result.value); setCursors(history);
     } catch (e) { if (!request.signal.aborted) setError(e instanceof Error ? e.message : "日志查询失败"); }
     finally { if (!request.signal.aborted) setBusy(false); }
   }
@@ -66,8 +73,12 @@ export function LogExplorer({ api }: { api: AdminApi }) {
     while (parent && spans.has(parent) && !visited.has(parent) && count < 12) { visited.add(parent); count++; parent = spans.get(parent)!.parent_span_id; }
     return count;
   }
+  const grafanaTrace = health?.grafana_url && traceId ? health.grafana_url + "/explore?left=" + encodeURIComponent(JSON.stringify({
+    datasource: "healthpilot-tempo", queries: [{ refId: "A", queryType: "traceql", query: traceId, datasource: { type: "tempo", uid: "healthpilot-tempo" } }],
+    range: { from: "now-30d", to: "now" }
+  })) : null;
   return <div className="admin-panel log-explorer">
-    <h2>集中日志检索</h2><p>按请求、任务或链路追踪执行过程。日志不包含健康正文、工具参数或密钥。</p>
+    <h2>集中日志检索</h2><p>按请求、任务或链路检索 Loki 日志。日志不包含健康正文、工具参数或密钥。</p>
     <form onSubmit={search} className="log-filters">
       <label>时间范围<select value={filters.hours} onChange={e => setFilters({ ...filters, hours: e.target.value })}><option value="1">最近一小时</option><option value="24">最近一天</option><option value="168">最近七天</option><option value="720">最近三十天</option></select></label>
       <label>服务<select value={filters.service} onChange={e => setFilters({ ...filters, service: e.target.value })}>{["", "api", "worker", "mcp"].map(x => <option key={x} value={x}>{x || "全部"}</option>)}</select></label>
@@ -76,9 +87,14 @@ export function LogExplorer({ api }: { api: AdminApi }) {
       <button disabled={busy} className="admin-primary">{busy ? "查询中…" : "查询"}</button>
     </form>
     {error && <p role="alert" className="admin-error">{error}</p>}
-    {health && <p role="status">日志中心：{health.central_available ? "可用" : "不可用"}（{health.central_backend || "未知"}）；本实例缓冲：{health.pending ?? "未知"}；丢弃：{health.dropped ?? "未知"}。{health.export_error && `补传状态：${health.export_error}`}<br />{health.services.map(s => `${s.service} 最近入库 ${time(s.last_seen)}`).join("；")}</p>}
+    {health && <div role="status"><p>采集：OpenTelemetry；Loki：{health.central_available ? "可用" : "不可用或未配置"}；已配置导出：{health.configured.join("、") || "无（仅本地日志）"}。</p>
+      {Object.entries(health.signals).map(([name, state]) => <p key={name}>{name} 最近送达采集器：{state.last_success ? time(state.last_success) : "尚无记录"}；导出失败记录：{state.failed_records}；{state.error || "暂无导出错误"}</p>)}
+      <p>应用端使用有界内存队列；持久队列积压与丢弃情况请在 Grafana 监控中查看。</p>
+      {health.grafana_url && <a href={health.grafana_url + "/d/healthpilot-operations"} target="_blank" rel="noreferrer">打开 Grafana 运行观测</a>}
+    </div>}
+
     {(page || trace) && <button onClick={download}>导出{trace ? "已加载链路" : "当前页"}</button>}
-    {trace ? <section><h3>链路 {traceId}</h3><p>耗时包含子步骤；未结束可能仍在执行、补传或发生进程中断。跨机器时间取决于时钟同步。</p><button onClick={() => setTrace(null)}>返回日志</button>
+    {trace ? <section><h3>业务步骤 {traceId}</h3>{grafanaTrace && <a href={grafanaTrace} target="_blank" rel="noreferrer">在 Grafana 查看完整链路（含 HTTP 与数据库步骤）</a>}<p>以下由业务日志重建；采样或保留期可能影响完整链路查询。耗时包含子步骤；未结束可能仍在执行、补传或发生进程中断。跨机器时间取决于时钟同步。</p><button onClick={() => setTrace(null)}>返回日志</button>
       {[...spans.values()].sort((a, b) => (a.at - Number(a.attributes.duration_ms || 0)) - (b.at - Number(b.attributes.duration_ms || 0))).map(log => <div className="log-span" key={log.span_id} style={{ marginLeft: depth(log) * 18 }}><strong>{String(log.attributes.name)}</strong> · {log.service} · {log.event === "span.started" ? "尚无结束记录" : String(log.attributes.status)} · {String(log.attributes.duration_ms ?? "—")} ms{log.parent_span_id && !spans.has(log.parent_span_id) && " · 父步骤尚未加载或已过期"}<details><summary>标识与元数据</summary><pre>{JSON.stringify(log, null, 2)}</pre></details></div>)}
       {traceCursor && <button disabled={busy} onClick={() => void openTrace(traceId, true)}>继续加载较早链路</button>}
       {!spans.size && <p>暂未查到步骤，日志可能正在补传。</p>}

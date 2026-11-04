@@ -19,7 +19,7 @@ from app.memory import memory_backend
 from app.rag import Retriever
 from app.knowledge import MemoryKnowledgeBase, PgKnowledgeBase
 from app.http_security import request_id_context
-from app.telemetry import span, current, emit
+from app.telemetry import span, current, emit, bind, opaque_id
 from app.user_lock import user_execution_lock
 from app.knowledge_access import knowledge_scope, evidence_refs
 from app.model_gateway import model_run, save_usage
@@ -86,7 +86,7 @@ class HealthAgent:
         user_id = user_id or thread_id
         lock = self._locks.setdefault(user_id, asyncio.Lock())
         async with lock, user_execution_lock(user_id):
-            with span("agent.run"), knowledge_scope(user_id), model_run() as usage:
+            with bind(thread_id=current().get("thread_id") or opaque_id(thread_id, "thread"), user_hash=opaque_id(user_id.removeprefix("account:"))), span("agent.run"), knowledge_scope(user_id), model_run() as usage:
                 try:
                     async for event in self._stream(thread_id, message, user_id, web_search=web_search):
                         yield event

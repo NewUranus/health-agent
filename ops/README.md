@@ -71,33 +71,8 @@ bash ops/release.sh rollback
 | `RESTORE_REVIEW_REQUIRED` | 核对恢复数据与业务记录，人工决定后续请求；恢复环境默认停止新提交 |
 | 审计不可用 | 先恢复数据库/审计写入，再恢复新请求；核对故障期间可能已完成的动作 |
 
-## 统一日志与跨进程链路
+## OpenTelemetry 日志与跨进程链路
 
-API、Worker 和 MCP 统一输出 JSON 到 stderr，同时写本地持久缓冲，后台批量补传到集中日志库。字段包含事件 ID、毫秒时间、级别、服务/实例、trace_id、span_id、parent_span_id、request_id、task_id 和白名单元数据。健康正文、检索词、URL、工具参数/结果、提示词、Cookie、密码、密钥和异常正文不进入运行日志。普通第三方日志仅保留模板指纹、模块/位置、异常类型与不含源码的栈位置。操作审计仍由原有独立审计表负责，不将运行日志当作不可篡改审计。
+日志和链路已迁移到 structlog + OpenTelemetry SDK → Collector → Loki/Tempo → Grafana。原自研 SQLite 补传线程与 PostgreSQL 日志写入已停用；旧数据不删除。HTTP、队列、Worker、Agent、模型、RAG、MCP 和数据库调用通过标准追踪上下文关联。配置、部署、历史迁移和验收边界见 [OpenTelemetry 运维说明](OBSERVABILITY.md)。
 
-HTTP（包括完整 SSE 生命周期）→ 任务提交 → 持久队列 → Worker → Agent → 节点 → 模型尝试/知识检索 → MCP 客户端 → MCP 子进程形成父子 span；任务上下文随入队事务持久化，独立 Worker 读取后恢复，取消、超时、降级和模型重试可定位。响应返回 `X-Request-ID`、`X-Trace-ID`。MCP 通过协议 `_meta.healthpilot` 传递 W3C traceparent，不更改健康工具入参。旧任务没有持久化上下文时由 Worker 新建链路；升级前日志无法补齐。模型服务端内部、数据库服务端内部不在本项目可追踪范围。
-
-默认忽略客户端 traceparent，防止不可信调用者串入其他链路。仅在可信入口剥离客户端追踪头并重新生成后设置 `HEALTH_AGENT_TRUST_TRACEPARENT=1`。关联 ID 不是鉴权凭证。当前提供 W3C 格式传播和内置 span 存储，不声称已接入 OTLP、Jaeger 或其他外部追踪后端。
-
-| 配置 | 默认值 / 用途 |
-|---|---|
-| `HEALTH_AGENT_LOG_DATABASE_URL` | 未设置时使用 `DATABASE_URL`；可指定独立 PostgreSQL 日志库，各 API/Worker 必须一致 |
-| `HEALTH_AGENT_LOG_DB` | 无 PostgreSQL 时使用 `runs/logs/central.sqlite3`，仅供单机开发 |
-| `HEALTH_AGENT_LOG_SPOOL` | `runs/logs/spool.sqlite3`；本地 SQLite WAL 持久缓冲，API/Worker 各自持久卷，MCP 与父进程共享 |
-| `HEALTH_AGENT_LOG_BUFFER_ROWS` | 100000 条，允许 1000–1000000；达到上限按批丢弃最旧记录并累计丢弃数 |
-| `HEALTH_AGENT_LOG_RETENTION_DAYS` | 30 天，允许 1–3650；后台分批清理过期日志，积压时清理可能延后 |
-
-正式多实例部署需共同的 PostgreSQL 日志库；SQLite 文件不能跨主机承担集中检索。`ops/compose.runtime.yml` 已挂载日志持久卷并限制 Docker stderr 日志轮转，不要通过 `down -v` 删除待补传日志。独立日志库账号需要本库建表/索引及读写权限，连接凭证由环境/部署密钥提供，不写进仓库。日志库备份、TLS、磁盘容量与只读运维账户由部署方按环境配置；现有业务库备份不会自动覆盖独立日志库和待补传持久卷。
-
-日志中心失败时重试间隔从 1 秒增加到 30 秒；每批 250 条，事件 ID 去重，中心提交后才删除本地记录。停机保留待补传数据。缓冲上限或磁盘故障可能丢日志，会输出脱敏故障事件并累计计数，不承诺无限缓存或绝不丢失。进程突然终止可能留下只有开始记录的 span，界面会明确标识。
-
-后台 `/admin` → **日志检索**：按最近一小时/一天/七天/三十天、服务、级别、事件、请求/任务/链路 ID 和关键词查询，游标翻页、展开元数据、查看父子链路与耗时、导出当前页或已加载链路。PostgreSQL 关键词采用全文索引的词项匹配（不提供中文分词）；开发 SQLite 使用子串匹配。精确排障优先使用 ID/事件过滤。
-
-接口均为 V1，继续受管理员鉴权、审计和 no-store 保护，正式登录模式才开放：
-
-- `GET /api/v1/admin/logs`：`start/end` 毫秒时间，跨度最多 30 天；`limit` 最大 200；返回稳定的 `next_cursor`。
-- `GET /api/v1/admin/traces/{trace_id}`：每页最多 1000 条，`before` 继续较早记录；未加载或过期的父步骤会显示提示。
-- `GET /api/v1/admin/logs/status`：当前 API 实例缓冲、丢弃、最近补传和中心可用性，以及各服务最近入库时间。它不是所有 Worker 缓冲状态的汇总；独立 Worker 故障需同时检查其 stderr/容器状态及最近入库时间。
-- `/api/v1/admin/metrics` 新增本 API 实例的 `healthpilot_log_buffer_pending`、`healthpilot_log_dropped_total` 和 `healthpilot_log_export_unavailable`；告警规则已加入示例文件，部署方仍需加载规则和配置通知接收方。
-
-本轮仅做 Python 编译与前端构建，未运行功能/故障注入/负载测试，未部署日志中心或告警通知。生产容量、中心故障补传、跨主机时钟同步和恢复需实际验收；代码交付不等于企业级生产验收通过。
+旧版 `HEALTH_AGENT_LOG_DATABASE_URL`、`HEALTH_AGENT_LOG_SPOOL`、`HEALTH_AGENT_LOG_BUFFER_ROWS`、`HEALTH_AGENT_LOG_RETENTION_DAYS` 不再控制新链路。部署时增加 `ops/compose.observability.yml`，设置新镜像、Grafana 密码和遥测 HMAC 密钥。新保留期由 Loki/Tempo 配置管理。

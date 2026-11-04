@@ -1,0 +1,40 @@
+apiVersion: 1
+prune: true
+datasources:
+  - name: HealthPilot 日志
+    uid: healthpilot-loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      derivedFields:
+        - name: TraceID
+          matcherRegex: '"trace_id"\s*:\s*"([0-9a-f]{32})"'
+          datasourceUid: healthpilot-tempo
+          url: '$${__value.raw}'
+          urlDisplayLabel: 查看链路
+  - name: HealthPilot 链路
+    uid: healthpilot-tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      nodeGraph:
+        enabled: true
+      tracesToLogsV2:
+        datasourceUid: healthpilot-loki
+        spanStartTimeShift: '-5m'
+        spanEndTimeShift: '5m'
+        filterByTraceID: false
+        filterBySpanID: false
+        customQuery: true
+        query: '{service_namespace="healthpilot"} | json hp_trace="trace_id" | hp_trace="$${__span.traceId}"'
+  - name: HealthPilot 指标
+    uid: healthpilot-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

@@ -22,23 +22,30 @@ groups:
           severity: warning
         annotations:
           summary: "HealthPilot 存在租约过期任务"
-      - alert: HealthPilotLogExportUnavailable
-        expr: healthpilot_log_export_unavailable > 0
+      - alert: HealthPilotTelemetryExportFailed
+        expr: healthpilot_otel_export_unavailable > 0
         for: 2m
         labels:
           severity: critical
         annotations:
-          summary: "HealthPilot 日志中心补传持续失败"
-      - alert: HealthPilotLogBufferGrowing
-        expr: healthpilot_log_buffer_pending > 10000
+          summary: "HealthPilot OTLP 导出持续失败"
+      - alert: HealthPilotCollectorQueueGrowing
+        expr: otelcol_exporter_queue_size / otelcol_exporter_queue_capacity > 0.7
         for: 2m
         labels:
           severity: warning
         annotations:
-          summary: "HealthPilot 日志本地缓冲积压"
-      - alert: HealthPilotLogDropped
-        expr: delta(healthpilot_log_dropped_total[5m]) > 0
+          summary: "OpenTelemetry Collector 持久队列使用率超过70%"
+      - alert: HealthPilotCollectorRejected
+        expr: increase(otelcol_receiver_refused_log_records_total[5m]) > 0 or increase(otelcol_receiver_refused_spans_total[5m]) > 0
         labels:
           severity: critical
         annotations:
-          summary: "HealthPilot 日志发生丢弃，请检查磁盘和日志中心"
+          summary: "OpenTelemetry Collector 拒收遥测数据"
+      - alert: HealthPilotTelemetryBackendDown
+        expr: up{job=~"otel-collector|loki|tempo"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "可观测性服务不可达"

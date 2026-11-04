@@ -1,0 +1,90 @@
+# 从仓库根目录与基础、runtime 两份 Compose 合并；不暴露无鉴权采集端口。
+services:
+  app:
+    environment: &app_telemetry
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      HEALTH_AGENT_LOKI_URL: http://loki:3100
+      HEALTH_AGENT_GRAFANA_URL: ${HEALTH_AGENT_GRAFANA_URL:-http://127.0.0.1:3000}
+      HEALTH_AGENT_TRACE_SAMPLE_RATIO: ${HEALTH_AGENT_TRACE_SAMPLE_RATIO:-1}
+      HEALTH_AGENT_TELEMETRY_HMAC_KEY: ${HEALTH_AGENT_TELEMETRY_HMAC_KEY:?请设置至少32字符的遥测脱敏密钥}
+  worker:
+    environment: *app_telemetry
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.140.0
+    user: '10001:10001'
+    command: ['--config=/etc/otelcol/config.yml']
+    volumes:
+      - ./ops/observability/collector.yml:/etc/otelcol/config.yml:ro
+      - collector_data:/var/lib/otelcol
+    depends_on:
+      telemetry-volume-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    stop_grace_period: 30s
+  loki:
+    image: grafana/loki:3.6.0
+    user: '10001:10001'
+    command: ['-config.file=/etc/loki/config.yml']
+    volumes:
+      - ./ops/observability/loki.yml:/etc/loki/config.yml:ro
+      - loki_data:/loki
+    depends_on:
+      telemetry-volume-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+  tempo:
+    image: grafana/tempo:2.9.0
+    user: '10001:10001'
+    command: ['-config.file=/etc/tempo/config.yml']
+    volumes:
+      - ./ops/observability/tempo.yml:/etc/tempo/config.yml:ro
+      - tempo_data:/var/tempo
+    depends_on:
+      telemetry-volume-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+  telemetry-volume-init:
+    image: busybox:1.37.0
+    user: '0:0'
+    command: ['sh', '-c', 'chown 10001:10001 /collector /loki /tempo && chmod 750 /collector /loki /tempo']
+    volumes:
+      - collector_data:/collector
+      - loki_data:/loki
+      - tempo_data:/tempo
+    restart: 'no'
+  prometheus:
+    image: prom/prometheus:v3.7.3
+    command: ['--config.file=/etc/prometheus/prometheus.yml', '--storage.tsdb.path=/prometheus', '--storage.tsdb.retention.time=30d']
+    volumes:
+      - ./ops/prometheus.example.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/alerts.yml:/etc/prometheus/healthpilot-alerts.yml:ro
+      - prometheus_data:/prometheus
+    secrets:
+      - healthpilot_admin_password
+    restart: unless-stopped
+  grafana:
+    image: grafana/grafana:12.3.0
+    ports:
+      - '127.0.0.1:${HEALTH_AGENT_GRAFANA_PORT:-3000}:3000'
+    environment:
+      GF_SECURITY_ADMIN_USER: ${HEALTH_AGENT_GRAFANA_ADMIN:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${HEALTH_AGENT_GRAFANA_PASSWORD:?请设置Grafana管理员密码}
+      GF_AUTH_ANONYMOUS_ENABLED: 'false'
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./ops/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/observability/grafana/dashboard.json:/var/lib/grafana/dashboards/healthpilot.json:ro
+    restart: unless-stopped
+secrets:
+  healthpilot_admin_password:
+    environment: ADMIN_PASSWORD
+volumes:
+  collector_data:
+  loki_data:
+  tempo_data:
+  prometheus_data:
+  grafana_data:

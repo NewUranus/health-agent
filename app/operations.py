@@ -128,8 +128,11 @@ def attach_operations(router):
         for name, value in {"workers": len(data["workers"]), "queue_oldest_seconds": data["oldest_pending_seconds"], "stale_tasks": data["stale_tasks"], "admission_paused": int(data["admission_paused"])}.items():
             lines.extend([f"# TYPE healthpilot_{name} gauge", f"healthpilot_{name} {value}"])
         logs = await asyncio.to_thread(log_status)
-        for name, value in {"log_buffer_pending": logs.get("pending"), "log_dropped_total": logs.get("dropped"),
-                "log_export_unavailable": int(bool(logs.get("export_error")))}.items():
-            if value is not None:
-                lines.extend([f"# TYPE healthpilot_{name} gauge", f"healthpilot_{name} {value}"])
+        for signal in ("traces", "logs"):
+            state = logs.get("signals", {}).get(signal, {})
+            for name, value in {"otel_export_configured": int(signal in logs.get("configured", [])),
+                    "otel_export_failed_records_total": state.get("failed_records", 0),
+                    "otel_export_failed_batches_total": state.get("failed_batches", 0),
+                    "otel_export_unavailable": int(bool(state.get("error")))}.items():
+                lines.append(f'healthpilot_{name}{{signal="{signal}"}} {value}')
         return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")

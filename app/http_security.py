@@ -16,7 +16,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.auth import AuthFailure, AuthStore, COOKIE_NAME, SESSION_SECONDS
 from app.knowledge_access import principal
-from app.telemetry import emit
+from app.telemetry import emit, opaque_id
+from structlog.contextvars import bind_contextvars, reset_contextvars
 
 request_id_context = ContextVar("request_id", default="")
 logger = logging.getLogger(__name__)
@@ -145,10 +146,12 @@ def attach_security(application, router, resource_path, version_headers):
         audited = required and bool(admin or personal or (resource and resource.startswith("/auth/")))
         actor = None
         knowledge_token = principal.set("")
+        log_tokens = bind_contextvars(user_hash="")
         try:
             if required:
                 request.state.user = await asyncio.to_thread(store.resolve, request.cookies.get(COOKIE_NAME))
                 actor = request.state.user["id"] if request.state.user else None
+                bind_contextvars(user_hash=opaque_id(actor))
             if audited:
                 # 不保存查询参数、正文、密码、Cookie 或健康资料。
                 await asyncio.to_thread(store.audit, actor, "http.requested", resource, request.state.request_id, 0)
@@ -183,6 +186,7 @@ def attach_security(application, router, resource_path, version_headers):
         finally:
             request_id_context.reset(context)
             principal.reset(knowledge_token)
+            reset_contextvars(**log_tokens)
         if audited:
             try:
                 await asyncio.to_thread(store.audit, actor, "http.response", resource, request.state.request_id, response.status_code)

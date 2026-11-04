@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.auth import AuthFailure
 from app.operations import require_database
 from app.telemetry import status
-from app.telemetry_store import LogStore
+from app.log_backend import LokiStore, grafana_url
 
 
 class LogQuery(BaseModel):
@@ -15,11 +15,13 @@ class LogQuery(BaseModel):
     start: int | None = Field(default=None, ge=0)
     end: int | None = Field(default=None, ge=0)
     limit: int = Field(default=100, ge=1, le=200)
-    before: str | None = Field(default=None, pattern=r"^[0-9]{1,16}:[0-9a-f]{32}$")
+    before: str | None = Field(default=None, pattern=r"^[0-9]{1,20}:[0-9a-f]{32}$")
     q: str = Field(default="", max_length=100)
     trace_id: str = Field(default="", pattern=r"^([0-9a-f]{32})?$")
     request_id: str = Field(default="", pattern=r"^([0-9a-f]{32})?$")
     task_id: str = Field(default="", pattern=r"^([0-9a-f]{32})?$")
+    thread_id: str = Field(default="", pattern=r"^([0-9a-f]{32})?$")
+    user_hash: str = Field(default="", pattern=r"^([0-9a-f]{32})?$")
     service: Literal["", "api", "worker", "mcp"] = ""
     level: Literal["", "INFO", "WARNING", "ERROR", "CRITICAL"] = ""
     event: str = Field(default="", max_length=100, pattern=r"^[a-zA-Z0-9_.-]*$")
@@ -27,7 +29,9 @@ class LogQuery(BaseModel):
 
 async def read_logs(**query):
     try:
-        return await asyncio.to_thread(LogStore().search, **query)
+        return await LokiStore().search(**query)
+    except AuthFailure:
+        raise
     except Exception:
         raise AuthFailure(503, "LOG_STORE_UNAVAILABLE", "集中日志暂不可用，请查看运行状态并稍后重试。") from None
 
@@ -44,21 +48,18 @@ def attach_log_api(router):
         values.update(start=start, end=end)
         return {**await read_logs(**values), "start": start, "end": end}
 
-    @router.get("/admin/logs/status", summary="本实例日志缓冲与中心各服务最近入库时间")
+    @router.get("/admin/logs/status", summary="OpenTelemetry 导出状态、Loki 可用性和 Grafana 入口")
     async def log_status(request: Request):
         require_database(request)
         local = await asyncio.to_thread(status)
-        def services():
-            with LogStore().connection() as execute:
-                return [dict(row) for row in execute("SELECT service, MAX(at) AS last_seen FROM hp_logs WHERE at >= ? GROUP BY service", (int(time.time() * 1000) - 86400000,)).fetchall()]
         try:
-            seen = await asyncio.to_thread(services)
-            return {**local, "central_available": True, "services": seen}
+            available = await LokiStore().ready()
         except Exception:
-            return {**local, "central_available": False, "services": []}
+            available = False
+        return {**local, "central_available": available, "grafana_url": grafana_url(), "services": []}
 
     @router.get("/admin/traces/{trace_id}", summary="按 trace_id 获取跨进程链路，支持游标续页")
     async def trace(request: Request, trace_id: str = Path(pattern=r"^[0-9a-f]{32}$"),
-                    before: str | None = Query(None, pattern=r"^[0-9]{1,16}:[0-9a-f]{32}$")):
+                    before: str | None = Query(None, pattern=r"^[0-9]{1,20}:[0-9a-f]{32}$")):
         require_database(request)
-        return await read_logs(start=0, end=int(time.time() * 1000), trace_id=trace_id, limit=1000, before=before)
+        return await read_logs(start=int(time.time() * 1000) - 30 * 86400000, end=int(time.time() * 1000), trace_id=trace_id, limit=1000, before=before)

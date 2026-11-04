@@ -26,7 +26,7 @@ class MCPClient:
         self.stack = AsyncExitStack()
         try:
             params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"], cwd=str(ROOT),
-                env={key: value for key, value in os.environ.items() if key == "DATABASE_URL" or key.startswith("HEALTH_AGENT_LOG_") or key == "HEALTH_AGENT_RELEASE"})
+                env={key: value for key, value in os.environ.items() if key.startswith("OTEL_") or key in {"HEALTH_AGENT_RELEASE", "HEALTH_AGENT_TRACE_SAMPLE_RATIO", "HEALTH_AGENT_TELEMETRY_HMAC_KEY"}})
             reader, writer = await self.stack.enter_async_context(stdio_client(params))
             self.session = await self.stack.enter_async_context(ClientSession(reader, writer))
             await self.session.initialize()

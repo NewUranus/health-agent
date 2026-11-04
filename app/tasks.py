@@ -8,7 +8,7 @@ import uuid
 
 from app.auth import AuthFailure, digest
 from app.http_security import request_id_context
-from app.telemetry import bind, carrier, extract, span, traced, emit
+from app.telemetry import bind, carrier, extract, span, traced, emit, opaque_id
 from app.task_context import TaskExecution, task_execution
 from app.database import schema_lock_sync
 
@@ -100,7 +100,7 @@ class TaskStore:
                 raise AuthFailure(409, "IDEMPOTENCY_CONFLICT", "同一幂等键对应不同请求，请勿修改后重用。")
             created = row["id"] == task_id
             if created:
-                execute("INSERT INTO hp_task_traces VALUES (?, ?)", (task_id, json.dumps(carrier())))
+                execute("INSERT INTO hp_task_traces VALUES (?, ?)", (task_id, json.dumps({**carrier(), "task_id": task_id, "request_id": request_id, "thread_id": opaque_id(payload["thread_id"], "thread"), "user_hash": opaque_id(user_id)})))
                 suffix = " FOR UPDATE" if self.db.url else ""
                 conversation = execute("SELECT archived FROM hp_conversations WHERE user_id = ? AND thread_id = ?" + suffix, (user_id, payload["thread_id"])).fetchone()
                 if conversation and conversation["archived"]:
@@ -286,7 +286,8 @@ class TaskRunner:
 
     async def run(self, job):
         parent = await asyncio.to_thread(self.store.trace_context, job["id"])
-        parent.update(task_id=job["id"], request_id=job["request_id"])
+        parent.update(task_id=job["id"], request_id=job["request_id"],
+                      thread_id=opaque_id(job["thread_id"], "thread"), user_hash=opaque_id(job["user_id"]))
         with bind(**parent), span("worker.execute", kind="consumer",
                 queue_wait_ms=max(0, (time.time_ns() - job["created_at"]) / 1000000)) as fields:
             await self._run(job)

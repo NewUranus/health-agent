@@ -10,4 +10,13 @@ scrape_configs:
       credentials_file: /run/secrets/healthpilot_admin_password
     static_configs:
       - targets: ['app:8000']
+  - job_name: otel-collector
+    static_configs:
+      - targets: ['otel-collector:8888']
+  - job_name: loki
+    static_configs:
+      - targets: ['loki:3100']
+  - job_name: tempo
+    static_configs:
+      - targets: ['tempo:3200']
 # 外部告警接收方由部署方在 Alertmanager 配置，不在仓库写入个人联系信息。

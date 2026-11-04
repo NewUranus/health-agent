@@ -175,3 +175,9 @@ cd frontend && npm ci && npm test
 | [docs/FOLLOWUP.md](docs/FOLLOWUP.md) | 随访流程 |
 | [ops/README.md](ops/README.md) | 监控、日志、备份与发布 |
 | [ACCEPTANCE_MATRIX.md](ACCEPTANCE_MATRIX.md) | 目标与验收矩阵 |
+
+### OpenTelemetry 可观测性
+
+日志与链路现已接入 **structlog + OpenTelemetry SDK → OTLP Collector → Loki / Tempo → Grafana**。后台“日志检索”查询 Loki，支持按请求、任务、脱敏会话/用户标识定位，并跳转 Grafana 查看完整链路。HTTP、队列、Worker、Agent 节点、模型、RAG、MCP 和数据库调用共享标准追踪上下文；健康正文、提示词、SQL、URL 和异常正文不会导出。
+
+启动配置与迁移说明见 [OpenTelemetry 部署说明](ops/OBSERVABILITY.md)。默认不向外发送遥测；配置 OTLP 端点后启用导出。新日志不再写入旧 PostgreSQL 日志表，旧数据保留。部署文件提供单机持久化方案，未宣称已完成高可用、容量或故障恢复验收。

@@ -16,6 +16,11 @@ dependencies = [
     "psycopg[binary,pool]>=3.3.6",
     "pymupdf>=2.0",
     "python-multipart>=0.0.32",
+    "opentelemetry-sdk>=1.39,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.39,<2",
+    "opentelemetry-instrumentation-httpx>=0.60b0,<1",
+    "opentelemetry-instrumentation-psycopg>=0.60b0,<1",
+    "structlog>=25,<26",
 ]
 
 [dependency-groups]
