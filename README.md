@@ -90,16 +90,39 @@ flowchart TD
     S --> A[知识问答]
 ```
 
-| 部分 | 技术 |
-|---|---|
-| Agent 编排 | LangGraph（主图 + 子图、checkpointer、Store） |
-| 工具 | MCP Python SDK 2.x（stdio 子进程），Function Calling 循环 |
-| 模型 | 千问（OpenAI 兼容接口，通过 langchain-openai 调用） |
-| 检索 | 千问 embedding + pgvector，向量不可用时退回 BM25（rank-bm25 + jieba） |
-| 后端 | Python 3.12、FastAPI、SSE 流式接口 |
-| 前端 | React + TypeScript + Vite，Vitest 测试 |
-| 存储 | PostgreSQL + pgvector（会话、长期记忆、知识库），未配置时用内存 |
-| 部署 | Docker Compose、Caddy（HTTPS），GitHub Actions 跑测试和 Mock 评测 |
+### 技术栈
+
+以下列出项目直接使用的主要框架、库和基础设施。Python 的具体依赖版本以 [pyproject.toml](pyproject.toml) 和 [uv.lock](uv.lock) 为准，前端以 [package.json](frontend/package.json) 和 [package-lock.json](frontend/package-lock.json) 为准。
+
+| 模块 | 框架 / 组件 | 项目中的用途 |
+|---|---|---|
+| 运行与依赖管理 | Python 3.12+、uv | 后端运行、依赖安装和版本锁定 |
+| API 与参数校验 | FastAPI、Pydantic、Uvicorn | V1 HTTP API、请求校验、OpenAPI、ASGI 服务和 SSE 流式响应 |
+| Agent 编排 | LangGraph、langchain-core | 主图/子图、节点状态、消息、人工中断和恢复 |
+| 模型接入 | langchain-openai、千问 OpenAI 兼容接口 | 对话模型、工具绑定和 Embedding；项目自研网关管理限额、路由、降级与用量 |
+| 工具协议 | MCP Python SDK 2.x | stdio 子进程暴露健康计算、网页搜索和读取工具 |
+| 检索 | pgvector、rank-bm25、jieba | 向量检索、向量不可用时的 BM25 回退、中文分词 |
+| PDF 与上传 | PyMuPDF、python-multipart | PDF 文字提取、页码保留、上传解析；切分规则由项目实现 |
+| 网页搜索与读取 | Python 标准库 HTTP/HTML/XML 解析 | 适配 Bing RSS、DuckDuckGo HTML，读取公开网页与文字版 PDF，经 MCP 调用 |
+| 业务存储 | PostgreSQL、Psycopg 3 | 账号、任务、会话元数据、知识库、权限、审计与模型用量；包含连接池支持 |
+| Agent 状态持久化 | langgraph-checkpoint-postgres、LangGraph Store | PostgreSQL checkpointer 和长期记忆；无数据库时采用内存实现 |
+| 本地账号与任务存储 | SQLite（Python 标准库） | 未配置 PostgreSQL 时保存账号、任务等平台元数据；健康记忆仍为内存，持久性边界不同 |
+| 前端 | React、React DOM、TypeScript、Vite | 对话、会话工作台、知识库管理与运维界面，构建产物由 FastAPI 托管 |
+| 结构化日志 | structlog、Python logging | JSON 序列化、业务上下文、统一关联 ID 和敏感信息过滤 |
+| 标准链路与导出 | OpenTelemetry SDK、OTLP HTTP/protobuf exporter、HTTPX/Psycopg instrumentation | 应用 span、跨任务/MCP 上下文传播，以及 HTTP 客户端和 PostgreSQL 自动埋点 |
+| 遥测采集与存储 | OpenTelemetry Collector、Loki、Tempo | 持久发送队列、日志集中存储、标准 trace 存储；已提供部署配置，需启动服务后使用 |
+| 指标与可视化 | Prometheus、Grafana | 指标采集、告警规则、运行大盘、日志与链路跳转；通知接收方需另行配置 |
+| HTTP 客户端与环境配置 | HTTPX、python-dotenv | Loki 查询、模型 SDK 的 HTTP 通信支持及 `.env` 加载 |
+| 开发验证 | pytest、Vitest、React Testing Library、jsdom | 后端测试、前端组件测试与浏览器 DOM 模拟；医学评测脚本由项目实现 |
+| 部署与 CI | Docker / Docker Compose、Caddy、GitHub Actions | 容器部署、HTTPS 入口和持续集成 |
+
+任务队列与 Worker 调度、账号会话和数据权限、模型网关、知识发布审批，以及急症护栏、风险公式、引用校验和随访规则，均为项目代码实现。PostgreSQL 承担持久任务队列；MCP 是工具通信协议；千问是模型服务，三者与应用框架的职责不同。
+
+### OpenTelemetry 可观测性
+
+日志与链路已在代码中接入 **structlog + OpenTelemetry SDK → OTLP Collector → Loki / Tempo → Grafana**，Prometheus 负责指标采集。后台“日志检索”查询 Loki，支持按请求、任务、脱敏会话/用户标识定位，并跳转 Grafana 查看完整链路。HTTP、队列、Worker、Agent 节点、模型、RAG、MCP 和数据库调用共享标准追踪上下文；健康正文、提示词、SQL、URL 和异常正文不会导出。
+
+这里的“接入”指代码与部署配置已完成，不表示这些服务已经在本机或在线演示部署。默认不向外发送遥测，设置 OTLP 端点后启用导出；Loki 查询还需配置服务地址。新日志不再写入旧 PostgreSQL 日志表，旧数据保留。启动配置与迁移说明见 [OpenTelemetry 部署说明](ops/OBSERVABILITY.md)，当前提供单机持久化方案，未完成高可用、容量或故障恢复验收。
 
 <details>
 <summary>目录结构</summary>
@@ -174,10 +197,5 @@ cd frontend && npm ci && npm test
 | [docs/ADMIN.md](docs/ADMIN.md) | 知识库后台 |
 | [docs/FOLLOWUP.md](docs/FOLLOWUP.md) | 随访流程 |
 | [ops/README.md](ops/README.md) | 监控、日志、备份与发布 |
+| [ops/OBSERVABILITY.md](ops/OBSERVABILITY.md) | OpenTelemetry、Collector、Loki、Tempo、Grafana 的配置与部署 |
 | [ACCEPTANCE_MATRIX.md](ACCEPTANCE_MATRIX.md) | 目标与验收矩阵 |
-
-### OpenTelemetry 可观测性
-
-日志与链路现已接入 **structlog + OpenTelemetry SDK → OTLP Collector → Loki / Tempo → Grafana**。后台“日志检索”查询 Loki，支持按请求、任务、脱敏会话/用户标识定位，并跳转 Grafana 查看完整链路。HTTP、队列、Worker、Agent 节点、模型、RAG、MCP 和数据库调用共享标准追踪上下文；健康正文、提示词、SQL、URL 和异常正文不会导出。
-
-启动配置与迁移说明见 [OpenTelemetry 部署说明](ops/OBSERVABILITY.md)。默认不向外发送遥测；配置 OTLP 端点后启用导出。新日志不再写入旧 PostgreSQL 日志表，旧数据保留。部署文件提供单机持久化方案，未宣称已完成高可用、容量或故障恢复验收。
