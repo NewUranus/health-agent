@@ -76,3 +76,11 @@ bash ops/release.sh rollback
 日志和链路已迁移到 structlog + OpenTelemetry SDK → Collector → Loki/Tempo → Grafana。原自研 SQLite 补传线程与 PostgreSQL 日志写入已停用；旧数据不删除。HTTP、队列、Worker、Agent、模型、RAG、MCP 和数据库调用通过标准追踪上下文关联。配置、部署、历史迁移和验收边界见 [OpenTelemetry 运维说明](OBSERVABILITY.md)。
 
 旧版 `HEALTH_AGENT_LOG_DATABASE_URL`、`HEALTH_AGENT_LOG_SPOOL`、`HEALTH_AGENT_LOG_BUFFER_ROWS`、`HEALTH_AGENT_LOG_RETENTION_DAYS` 不再控制新链路。部署时增加 `ops/compose.observability.yml`，设置新镜像、Grafana 密码和遥测 HMAC 密钥。新保留期由 Loki/Tempo 配置管理。
+
+## CI 触发与等待时间
+
+工作流先按整次 push/PR 的变更判断范围。只有 README、验收矩阵、`docs/`（含截图）或运维说明变化时，仅执行轻量分类，跳过测试和镜像发布。一个 push 同时包含之前积累的代码提交时仍执行完整检查，不以最后一条提交标题判定。手动运行工作流始终执行完整流程。
+
+后端检查改为失败即停、逐条显示用例名；超过 60 秒的用例打印等待堆栈，整步五分钟后终止，必要时 15 秒后强制结束。检查作业总上限十五分钟，前端与依赖步骤分别限时；同一分支的新代码检查取消旧检查。镜像仅在检查成功后发布，不将超时或失败伪装成成功。
+
+纯文档运行成功不代表该 SHA 有镜像。部署程序必须选择镜像发布任务实际成功的版本；当前本地 `healthpilot-deploy` 若仍取远端 HEAD，纯文档提交后可能拉取不到对应镜像。现有镜像不会因为文档更新自动改变。

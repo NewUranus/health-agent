@@ -3,8 +3,59 @@ on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
 jobs:
-  check:
+  changes:
+    name: 判断是否需要构建
     runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      code: ${{ steps.scope.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 按整次推送或 PR 的变更范围判断
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BASE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 手动运行或无法确定变更范围时保留完整检查。
+          code=true
+          base="$PUSH_BASE"
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            base="$PR_BASE"
+          fi
+          if [[ "$EVENT_NAME" != workflow_dispatch && "$base" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "$base^{commit}" 2>/dev/null; then
+            paths=$(mktemp)
+            if git diff --name-only -z "$base" HEAD > "$paths"; then
+              code=false
+              while IFS= read -r -d '' path; do
+                case "$path" in
+                  README.md|ACCEPTANCE_MATRIX.md|docs/*|ops/README.md|ops/OBSERVABILITY.md) ;;
+                  *) code=true; break ;;
+                esac
+              done < "$paths"
+            fi
+            rm -f "$paths"
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          if [[ "$code" == false ]]; then
+            echo '仅说明文档或文档截图变化，跳过测试与镜像发布；应用仍使用此前已发布的版本。' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '包含程序、依赖或部署配置变化，执行有超时限制的完整检查。' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  check:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: check-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
     env:
       HEALTH_AGENT_MOCK: "1"
       TEST_DATABASE_URL: postgresql://postgres:ci@localhost:5432/postgres
@@ -21,17 +72,26 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
-      - run: uv sync
-      - run: uv run pytest -q
+      - run: uv sync --locked
+        timeout-minutes: 3
+      - name: 后端检查（失败即停，最多五分钟）
+        timeout-minutes: 6
+        run: timeout --signal=TERM --kill-after=15s 5m uv run pytest -x -vv -ra -o faulthandler_timeout=60
       - run: uv run python -m eval.run_eval --mock
+        timeout-minutes: 3
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
       - run: npm ci
+        timeout-minutes: 3
         working-directory: frontend
       - run: npm test
+        timeout-minutes: 3
         working-directory: frontend
       - run: npm run build
+        timeout-minutes: 3
         working-directory: frontend
       # web/ 是提交进仓库的构建结果，必须和源码一致
       - run: git diff --exit-code -- web
@@ -43,8 +103,8 @@ jobs:
 
   publish-image:
     name: 构建并发布部署镜像
-    needs: check
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [changes, check]
+    if: needs.changes.outputs.code == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
