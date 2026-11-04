@@ -5,4 +5,9 @@ import AdminApp from "./admin/AdminApp";
 import { AuthGate } from "./auth/AuthGate";
 import "./styles.css";
 
-createRoot(document.getElementById("root")!).render(<StrictMode>{location.pathname === "/admin" ? <AdminApp /> : <AuthGate><App /></AuthGate>}</StrictMode>);
+const adminPath = location.pathname === "/admin";
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <AuthGate adminPath={adminPath}>{adminPath ? <AdminApp /> : <App />}</AuthGate>
+  </StrictMode>,
+);

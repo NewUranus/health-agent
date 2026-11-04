@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useContext, useEffect, useRef, useState, type FormEvent } from "react";
 import "./admin.css";
 import { AdminProblem, ApprovalDialog, ApprovalHistory, type Approval, type AccessPolicy } from "./Approvals";
 
@@ -6,6 +6,17 @@ import { LogExplorer } from "./LogExplorer";
 import { Operations } from "./Operations";
 import { KnowledgeArchive, TextImport } from "./KnowledgeArchive";
 import { KnowledgePolicy, ModelUsage } from "./Governance";
+import { AuthContext, type UserRole } from "../auth/AuthGate";
+
+const KNOWLEDGE_TABS = ["文档", "向量库", "检索测试", "确认记录", "模型用量", "版本档案", "文本导入"];
+const OPS_TABS = ["运行状态", "日志检索"];
+const ALL_TABS = [...KNOWLEDGE_TABS, ...OPS_TABS];
+
+function tabsForRole(role: UserRole | null | undefined) {
+  if (role === "knowledge_admin") return KNOWLEDGE_TABS;
+  if (role === "ops_admin") return OPS_TABS;
+  return ALL_TABS;
+}
 
 type Document = {
   withdrawn?: boolean; visibility?: "shared" | "restricted"; allowed_user_ids?: string[]; revision?: number;
@@ -54,28 +65,46 @@ function documentLabel(document: Document) {
 }
 
 export default function AdminApp() {
+  const auth = useContext(AuthContext);
+  const sessionRole = auth.user?.role;
+  const roleSession = sessionRole === "knowledge_admin" || sessionRole === "ops_admin";
+  const tabs = tabsForRole(sessionRole);
   const [token, setToken] = useState(storedPassword);
   // 服务器没配置 ADMIN_PASSWORD 时免登录：先不带密码试一次，再决定是否显示登录页
-  const [access, setAccess] = useState<"checking" | "open" | "locked">("checking");
+  const [access, setAccess] = useState<"checking" | "open" | "locked">(roleSession ? "open" : "checking");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  const [tab, setTab] = useState("文档");
+  const [tab, setTab] = useState(sessionRole === "ops_admin" ? "运行状态" : "文档");
   const [documents, setDocuments] = useState<Document[]>([]);
+
+  useEffect(() => {
+    if (roleSession) setAccess("open");
+  }, [roleSession]);
+
+  useEffect(() => {
+    if (!tabs.includes(tab)) setTab(tabs[0]);
+  }, [tabs, tab]);
 
   const api: Api = useCallback(async <T,>(path: string, init: RequestInit = {}): Promise<T> => {
     const headers = new Headers(init.headers);
     if (token) headers.set("Authorization", `Bearer ${token}`);
+    const method = (init.method ?? "GET").toUpperCase();
+    if (roleSession && method !== "GET" && method !== "HEAD") headers.set("X-HealthPilot-Request", "1");
     let response: Response;
-    try { response = await fetch(`/api/admin${path}`, { ...init, headers }); }
+    try { response = await fetch(`/api/admin${path}`, { ...init, headers, credentials: "same-origin" }); }
     catch { throw new Error("网络连接失败，请稍后重试。"); }
     if (response.status === 401) {
+      if (roleSession) {
+        auth.logout();
+        throw new Error("登录已失效，请重新登录。");
+      }
       storePassword(""); setToken(""); setPassword(""); setDocuments([]);
       throw new Error("密码错误");
     }
     const body = await response.json();
     if (!response.ok) throw new AdminProblem(typeof body.detail === "string" ? body.detail : "请求失败，请稍后重试。", body.code);
     return body as T;
-  }, [token]);
+  }, [token, roleSession, auth]);
 
   const reportError = useCallback((reason: unknown) => {
     setError(reason instanceof Error ? reason.message : "操作失败，请稍后重试。");
@@ -85,9 +114,9 @@ export default function AdminApp() {
     setDocuments(body.documents);
   }, [api]);
   useEffect(() => {
-    if (access !== "checking") return;
+    if (roleSession || access !== "checking") return;
     const controller = new AbortController();
-    fetch("/api/admin/documents", { signal: controller.signal })
+    fetch("/api/admin/documents", { signal: controller.signal, credentials: "same-origin" })
       .then((response) => {
         if (controller.signal.aborted) return;
         // 免登录时清掉以前存的密码，不留过期状态
@@ -96,29 +125,36 @@ export default function AdminApp() {
       })
       .catch(() => { if (!controller.signal.aborted) setAccess("locked"); });
     return () => controller.abort();
-  }, [access]);
-  const entered = access === "open" || (access === "locked" && !!token);
+  }, [access, roleSession]);
+  const entered = roleSession || access === "open" || (access === "locked" && !!token);
   useEffect(() => {
-    if (entered) void refresh().catch(reportError);
-  }, [entered, refresh, reportError]);
+    if (!entered || sessionRole === "ops_admin") return;
+    void refresh().catch(reportError);
+  }, [entered, refresh, reportError, sessionRole]);
 
   function login(event: FormEvent) {
     event.preventDefault(); setError(""); storePassword(password); setToken(password);
   }
 
+  const title = sessionRole === "ops_admin" ? "运维后台" : sessionRole === "knowledge_admin" ? "知识库后台" : "管理后台";
+  const subtitle = sessionRole === "ops_admin" ? "队列、审计与运行观测" : "内容发布前请人工核对";
+
   return <main className="admin-shell">
     <header className="admin-header">
-      <div><a href="/" className="admin-brand">HealthPilot</a><h1>知识库后台</h1><p>内容发布前请人工核对</p></div>
-      {access === "locked" && token && <button onClick={() => { storePassword(""); setToken(""); setPassword(""); setError(""); setDocuments([]); }}>退出登录</button>}
+      <div><a href={roleSession ? "/admin" : "/"} className="admin-brand">HealthPilot</a><h1>{title}</h1><p>{subtitle}</p></div>
+      {roleSession && <button onClick={() => auth.logout()} disabled={auth.busy}>退出登录</button>}
+      {!roleSession && access === "locked" && token && <button onClick={() => { storePassword(""); setToken(""); setPassword(""); setError(""); setDocuments([]); }}>退出登录</button>}
     </header>
     {error && <p role="alert" className="admin-error">{error}</p>}
-    {access === "checking" ? <p className="admin-panel">正在连接…</p> : !entered ? <form className="admin-panel admin-login" onSubmit={login}>
+    {!roleSession && access === "checking" ? <p className="admin-panel">正在连接…</p> : !entered ? <form className="admin-panel admin-login" onSubmit={login}>
       <h2>管理员登录</h2>
+      <p>可使用共享管理员口令；也可用知识/运维管理员账号在统一登录页进入。</p>
       <label>密码<input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required /></label>
       <button className="admin-primary" type="submit">登录</button>
+      <p><a href="/login">使用角色账号登录</a></p>
     </form> : <>
       <nav role="tablist" aria-label="后台功能" className="admin-tabs">
-        {["文档", "向量库", "检索测试", "确认记录", "模型用量", "版本档案", "文本导入", "运行状态", "日志检索"].map(name => <button key={name} role="tab" aria-selected={tab === name}
+        {tabs.map(name => <button key={name} role="tab" aria-selected={tab === name}
           aria-controls="admin-content" onClick={() => { setTab(name); setError(""); }}>{name}</button>)}
       </nav>
       <section role="tabpanel" id="admin-content" aria-label={tab}>

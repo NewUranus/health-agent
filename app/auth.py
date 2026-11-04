@@ -18,6 +18,13 @@ from app.database import schema_lock_sync
 ROOT = Path(__file__).resolve().parent.parent
 COOKIE_NAME = "healthpilot_session"
 SESSION_SECONDS = 12 * 60 * 60
+ROLES = frozenset({"user", "knowledge_admin", "ops_admin"})
+ADMIN_ROLES = frozenset({"knowledge_admin", "ops_admin"})
+_KNOWLEDGE_ADMIN = frozenset({
+    "documents", "document-pairs", "approvals", "knowledge-archives", "text-documents",
+    "chunks", "search", "compare", "stats", "accounts", "model-usage",
+})
+_OPS_ADMIN = frozenset({"operations", "queue", "admission", "audit", "metrics", "logs", "traces"})
 
 
 class AuthFailure(Exception):
@@ -38,6 +45,31 @@ def password_hash(password, salt=None):
 
 def valid_username(value):
     return bool(re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{2,63}", value))
+
+
+def valid_role(value):
+    return value in ROLES
+
+
+def admin_scope(resource):
+    """将 /admin/... 资源归为 knowledge、ops；无法识别时返回 None。"""
+    if not resource or not (resource == "/admin" or resource.startswith("/admin/")):
+        return None
+    name = resource[len("/admin"):].strip("/").split("/", 1)[0]
+    if not name:
+        return None
+    if name in _KNOWLEDGE_ADMIN:
+        return "knowledge"
+    if name in _OPS_ADMIN:
+        return "ops"
+    return None
+
+
+def role_allows_admin(role, resource):
+    scope = admin_scope(resource)
+    if scope is None or role not in ADMIN_ROLES:
+        return False
+    return (role == "knowledge_admin" and scope == "knowledge") or (role == "ops_admin" and scope == "ops")
 
 
 class AuthStore:
@@ -73,7 +105,7 @@ class AuthStore:
             self.path.chmod(0o600)
         with schema_lock_sync(self.url), self.connection() as execute:
             for statement in (
-                "CREATE TABLE IF NOT EXISTS hp_users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at BIGINT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS hp_users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at BIGINT NOT NULL, role TEXT NOT NULL DEFAULT 'user')",
                 "CREATE TABLE IF NOT EXISTS hp_sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES hp_users(id), expires_at BIGINT NOT NULL)",
                 "CREATE INDEX IF NOT EXISTS hp_sessions_user ON hp_sessions(user_id)",
                 "CREATE TABLE IF NOT EXISTS hp_threads (thread_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES hp_users(id))",
@@ -85,6 +117,15 @@ class AuthStore:
                 "CREATE TABLE IF NOT EXISTS hp_model_costs (usage_id TEXT PRIMARY KEY REFERENCES hp_model_usage(id) ON DELETE CASCADE, cost_microusd BIGINT NOT NULL, pricing_version TEXT NOT NULL)",
             ):
                 execute(statement)
+            self._ensure_role_column(execute)
+
+    def _ensure_role_column(self, execute):
+        if self.url:
+            execute("ALTER TABLE hp_users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'")
+            return
+        columns = {row["name"] for row in execute("PRAGMA table_info(hp_users)").fetchall()}
+        if "role" not in columns:
+            execute("ALTER TABLE hp_users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
 
     @staticmethod
     def _audit(execute, actor, action, resource, request_id, status):
@@ -95,25 +136,34 @@ class AuthStore:
         with self.connection() as execute:
             self._audit(execute, actor, action, resource, request_id, status)
 
-    def provision(self, username, password, *, reset=False):
+    def provision(self, username, password, *, reset=False, role=None):
         username = username.strip().lower()
         if not valid_username(username):
             raise ValueError("账号须为 3–64 位英文字母、数字、点、横线或下划线，并以字母或数字开头。")
         if not 12 <= len(password) <= 256:
             raise ValueError("密码须为 12–256 个字符。")
+        if role is None:
+            role = "user" if not reset else None
+        if role is not None and not valid_role(role):
+            raise ValueError("角色须为 user、knowledge_admin 或 ops_admin。")
         hashed = password_hash(password)
         with self.connection() as execute:
-            user = execute("SELECT id FROM hp_users WHERE username = ?", (username,)).fetchone()
+            user = execute("SELECT id, role FROM hp_users WHERE username = ?", (username,)).fetchone()
             if bool(user) != reset:
                 raise ValueError("账号不存在。" if reset else "账号已存在。")
             user_id = user["id"] if user else uuid.uuid4().hex
             if reset:
-                execute("UPDATE hp_users SET password_hash = ? WHERE id = ?", (hashed, user_id))
+                if role is None:
+                    execute("UPDATE hp_users SET password_hash = ? WHERE id = ?", (hashed, user_id))
+                    role = user["role"] if user["role"] in ROLES else "user"
+                else:
+                    execute("UPDATE hp_users SET password_hash = ?, role = ? WHERE id = ?", (hashed, role, user_id))
                 execute("DELETE FROM hp_sessions WHERE user_id = ?", (user_id,))
             else:
-                execute("INSERT INTO hp_users VALUES (?, ?, ?, ?)", (user_id, username, hashed, int(time.time())))
+                execute("INSERT INTO hp_users (id, username, password_hash, created_at, role) VALUES (?, ?, ?, ?, ?)",
+                        (user_id, username, hashed, int(time.time()), role))
             self._audit(execute, "local-operator", "user.password_reset" if reset else "user.created", user_id, uuid.uuid4().hex, 200)
-        return {"id": user_id, "username": username}
+        return {"id": user_id, "username": username, "role": role}
 
     def _reserve_attempt(self, username, client):
         now = int(time.time())
@@ -147,15 +197,21 @@ class AuthStore:
             execute("INSERT INTO hp_sessions VALUES (?, ?, ?)", (digest(token), user["id"], expires))
             execute("DELETE FROM hp_login_limits WHERE key = ?", (digest("user:" + username),))
             self._audit(execute, user["id"], "auth.login", "/auth/login", request_id, 200)
-        return token, {"id": user["id"], "username": user["username"]}, expires
+        role = user["role"] if user["role"] in ROLES else "user"
+        return token, {"id": user["id"], "username": user["username"], "role": role}, expires
 
     def resolve(self, token):
         if not token or len(token) > 128:
             return None
         with self.connection() as execute:
-            row = execute("SELECT u.id, u.username, s.expires_at FROM hp_sessions s JOIN hp_users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?",
+            row = execute("SELECT u.id, u.username, u.role, s.expires_at FROM hp_sessions s JOIN hp_users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?",
                           (digest(token), int(time.time()))).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        data = dict(row)
+        if data.get("role") not in ROLES:
+            data["role"] = "user"
+        return data
 
     def logout(self, token, actor, request_id):
         with self.connection() as execute:
@@ -177,6 +233,7 @@ def main():
     parser = argparse.ArgumentParser(description="本地管理 HealthPilot 账号；密码不会作为命令参数或输出。")
     parser.add_argument("action", choices=["create-user", "reset-password"])
     parser.add_argument("username")
+    parser.add_argument("--role", choices=sorted(ROLES), help="账号角色；创建时默认 user，重置时仅在显式传入时更改。")
     args = parser.parse_args()
     load_dotenv(ROOT / ".env")
     password = getpass.getpass("密码（至少 12 个字符）：")
@@ -185,7 +242,7 @@ def main():
     store = AuthStore()
     store.setup()
     try:
-        store.provision(args.username, password, reset=args.action == "reset-password")
+        store.provision(args.username, password, reset=args.action == "reset-password", role=args.role)
     except ValueError as exc:
         parser.exit(1, str(exc) + "\n")
     print("账号已创建。" if args.action == "create-user" else "密码已重置，旧登录会话已注销。")

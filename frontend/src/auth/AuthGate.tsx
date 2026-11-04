@@ -1,15 +1,26 @@
 import { createContext, useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { setExpectedUser } from "../lib/api";
 
-interface User { id: string; username: string }
+export type UserRole = "user" | "knowledge_admin" | "ops_admin";
+interface User { id: string; username: string; role: UserRole }
 interface SessionInfo { required: boolean; user: User | null; expires_at?: number }
-export const AuthContext = createContext<{ user: User | null; logout: () => void; busy: boolean }>({ user: null, logout: () => {}, busy: false });
+export const AuthContext = createContext<{
+  user: User | null; logout: () => void; busy: boolean; required: boolean;
+}>({ user: null, logout: () => {}, busy: false, required: false });
 
 function notifyTabs() {
   try { localStorage.setItem("healthpilot-auth-change", crypto.randomUUID()); } catch { /* 存储不可用时由服务端校验会话。 */ }
 }
 
-export function AuthGate({ children }: { children: ReactNode }) {
+function homePath(role: UserRole | undefined) {
+  return role === "knowledge_admin" || role === "ops_admin" ? "/admin" : "/";
+}
+
+function normalizeRole(value: unknown): UserRole {
+  return value === "knowledge_admin" || value === "ops_admin" || value === "user" ? value : "user";
+}
+
+export function AuthGate({ children, adminPath = false }: { children: ReactNode; adminPath?: boolean }) {
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [phase, setPhase] = useState<"checking" | "ready" | "login" | "unavailable">("checking");
   const [username, setUsername] = useState("");
@@ -23,6 +34,24 @@ export function AuthGate({ children }: { children: ReactNode }) {
     setPhase("login"); setError("登录已失效或账号已切换，请重新登录。");
   }, []);
 
+  const adopt = useCallback((body: SessionInfo) => {
+    const role = normalizeRole(body.user?.role);
+    const user = body.user ? { ...body.user, role } : null;
+    const next = { ...body, user };
+    const target = body.required && user ? homePath(role) : (adminPath ? "/admin" : "/");
+    const onAdmin = window.location.pathname === "/admin";
+    // / 与 /admin 是两套前端壳，必须整页切换；/login → / 只需替换地址。
+    if ((target === "/admin") !== onAdmin) {
+      window.location.assign(target);
+      return false;
+    }
+    if (window.location.pathname !== target) window.history.replaceState(null, "", target);
+    setExpectedUser(user?.id ?? null);
+    setSession(next);
+    setPhase("ready");
+    return true;
+  }, [adminPath]);
+
   const check = useCallback(async (signal?: AbortSignal) => {
     const current = ++generation.current;
     setPhase("checking"); setExpectedUser(null); setSession(null); setError("");
@@ -34,13 +63,14 @@ export function AuthGate({ children }: { children: ReactNode }) {
       const body: SessionInfo = await response.json();
       if (signal?.aborted || current !== generation.current) return;
       if (typeof body.required !== "boolean" || (body.required && (!body.user?.id || !body.expires_at))) throw new Error();
-      setExpectedUser(body.user?.id ?? null); setSession(body); setPhase("ready");
+      if (body.user) body.user.role = normalizeRole(body.user.role);
+      adopt(body);
     } catch {
       if (!signal?.aborted && current === generation.current) {
         setPhase("unavailable"); setError("暂时无法确认登录状态，请检查网络后重试。");
       }
     }
-  }, []);
+  }, [adopt]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -63,9 +93,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     // 登录页与健康首页使用独立地址，替换记录避免返回已失效的页面。
-    const path = phase === "login" ? "/login" : phase === "ready" ? "/" : null;
-    if (path && window.location.pathname !== path) window.history.replaceState(null, "", path);
-  }, [phase]);
+    if (phase === "login" && !adminPath && window.location.pathname !== "/login") {
+      window.history.replaceState(null, "", "/login");
+    }
+  }, [phase, adminPath]);
 
   useEffect(() => {
     if (!session?.expires_at) return;
@@ -86,7 +117,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
       if (current !== generation.current) return;
       if (!response.ok) throw new Error(body.detail ?? "登录失败，请稍后重试。");
       if (!body.user?.id || !body.expires_at) throw new Error("登录响应无效，请稍后重试。");
-      setExpectedUser(body.user.id); setSession(body); setPassword(""); setPhase("ready"); notifyTabs();
+      body.user.role = normalizeRole(body.user.role);
+      setPassword("");
+      if (!adopt(body)) return;
+      notifyTabs();
     } catch (reason) {
       if (current === generation.current) setError(reason instanceof Error ? reason.message : "网络连接失败，请稍后重试。");
     } finally { if (current === generation.current) setBusy(false); }
@@ -100,19 +134,42 @@ export function AuthGate({ children }: { children: ReactNode }) {
         headers: { "X-HealthPilot-Request": "1" } });
       if (!response.ok) throw new Error();
       generation.current++; setExpectedUser(null); setSession(null); setPassword(""); setPhase("login"); notifyTabs();
+      if (adminPath) window.location.assign("/login");
     } catch { setError("退出未完成，请检查网络后再次退出。"); }
     finally { setBusy(false); }
   }
 
-  if (phase === "ready" && session) return <AuthContext.Provider value={{ user: session.user, logout: () => void logout(), busy }}>
-    {error && <p className="auth-error" role="alert">{error}</p>}
-    {!session.required && <div className="demo-notice">免登录演示 · 仅使用虚拟数据，演示身份不提供访问保护</div>}
-    {children}
-  </AuthContext.Provider>;
+  const role = session?.user?.role;
+  const adminSession = role === "knowledge_admin" || role === "ops_admin";
+
+  if (phase === "ready" && session) {
+    if (session.required && adminPath && !adminSession) {
+      return <main className="auth-shell"><section className="auth-card" aria-label="权限提示">
+        <a className="brand" href="/">✚ HealthPilot</a>
+        <h1>无权访问管理后台</h1>
+        <p>当前账号是普通用户，请返回健康工作台，或使用管理员账号登录。</p>
+        <button type="button" onClick={() => window.location.assign("/")}>返回健康工作台</button>
+        <button type="button" onClick={() => void logout()} disabled={busy}>退出登录</button>
+      </section></main>;
+    }
+    return <AuthContext.Provider value={{ user: session.user, logout: () => void logout(), busy, required: session.required }}>
+      {error && <p className="auth-error" role="alert">{error}</p>}
+      {!session.required && <div className="demo-notice">免登录演示 · 仅使用虚拟数据，演示身份不提供访问保护</div>}
+      {children}
+    </AuthContext.Provider>;
+  }
+
+  // /admin 在未登录时仍渲染后台，保留共享口令紧急入口与现有测试路径。
+  if (adminPath && (phase === "login" || phase === "checking" || phase === "unavailable")) {
+    return <AuthContext.Provider value={{ user: null, logout: () => {}, busy, required: true }}>
+      {phase === "unavailable" && error && <p className="auth-error" role="alert">{error}</p>}
+      {children}
+    </AuthContext.Provider>;
+  }
 
   return <main className="auth-shell"><section className="auth-card" aria-label="账号登录">
     <a className="brand" href="/">✚ HealthPilot</a>
-    <h1>登录健康助手</h1><p>使用管理员为你创建的账号，访问自己的健康会话和随访记录。</p>
+    <h1>登录健康助手</h1><p>使用管理员为你创建的账号。普通用户进入健康评估；知识或运维管理员进入对应后台。</p>
     {error && <p className="auth-error" role="alert">{error}</p>}
     {phase === "checking" ? <p role="status">正在确认登录状态…</p> : phase === "unavailable"
       ? <button type="button" onClick={() => void check()}>重新连接</button>

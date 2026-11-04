@@ -14,7 +14,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.auth import AuthFailure, AuthStore, COOKIE_NAME, SESSION_SECONDS
+from typing import Literal
+
+from app.auth import AuthFailure, AuthStore, COOKIE_NAME, SESSION_SECONDS, role_allows_admin, ADMIN_ROLES
 from app.knowledge_access import principal
 from app.telemetry import emit, opaque_id
 from structlog.contextvars import bind_contextvars, reset_contextvars
@@ -22,6 +24,7 @@ from structlog.contextvars import bind_contextvars, reset_contextvars
 request_id_context = ContextVar("request_id", default="")
 logger = logging.getLogger(__name__)
 
+RoleName = Literal["user", "knowledge_admin", "ops_admin"]
 
 
 class LoginRequest(BaseModel):
@@ -33,6 +36,7 @@ class LoginRequest(BaseModel):
 class UserInfo(BaseModel):
     id: str
     username: str
+    role: RoleName = "user"
 
 
 class SessionInfo(BaseModel):
@@ -112,10 +116,10 @@ def attach_security(application, router, resource_path, version_headers):
                 if method not in {"get", "post", "patch", "delete", "put"}:
                     continue
                 if admin:
-                    operation["security"] = [{"KnowledgeAdmin": []}]
+                    operation["security"] = [{"KnowledgeAdmin": []}, {"UserSession": []}]
                 elif personal and application.state.auth_required:
                     operation["security"] = [{"UserSession": []}]
-                if application.state.auth_required and not admin and method != "get":
+                if application.state.auth_required and method != "get":
                     parameters = operation.setdefault("parameters", [])
                     if not any(p.get("name") == "X-HealthPilot-Request" for p in parameters):
                         parameters.append({"name": "X-HealthPilot-Request", "in": "header", "required": True,
@@ -138,6 +142,7 @@ def attach_security(application, router, resource_path, version_headers):
         resource = resource_path(request.url.path)
         request.state.request_id = getattr(request.state, "request_id", None) or uuid.uuid4().hex
         request.state.user = None
+        request.state.admin_auth = None
         context = request_id_context.set(request.state.request_id)
         store = application.state.auth_store
         required = application.state.auth_required
@@ -158,20 +163,42 @@ def attach_security(application, router, resource_path, version_headers):
             if admin:
                 password = os.getenv("ADMIN_PASSWORD")
                 authorization = request.headers.get("authorization", "")
-                if required and not password:
+                bearer_ok = bool(password) and hmac.compare_digest(
+                    authorization.encode(), ("Bearer " + password).encode())
+                role = request.state.user["role"] if request.state.user else None
+                session_ok = bool(required and role and role_allows_admin(role, resource))
+                if session_ok:
+                    request.state.admin_auth = "session"
+                    actor = request.state.user["id"]
+                    principal.set(None)
+                elif bearer_ok:
+                    request.state.admin_auth = "bearer"
+                    actor = "knowledge-admin"
+                    principal.set(None)
+                elif required and request.state.user and role in ADMIN_ROLES:
+                    raise AuthFailure(403, "ADMIN_ROLE_DENIED", "当前管理员角色无权访问该后台接口。")
+                elif required and request.state.user:
+                    raise AuthFailure(403, "ACCESS_DENIED", "普通账号不能访问管理后台。")
+                elif required and not password:
                     raise AuthFailure(503, "ADMIN_DISABLED", "后台尚未配置管理员凭证。")
-                if password and not hmac.compare_digest(authorization.encode(), ("Bearer " + password).encode()):
+                elif password:
                     raise AuthFailure(401, "ADMIN_AUTH_REQUIRED", "密码错误")
-                actor = "knowledge-admin"
-                principal.set(None)
+                elif required:
+                    raise AuthFailure(401, "ADMIN_AUTH_REQUIRED", "请先登录管理账号或提供管理员凭证。")
+                else:
+                    # 演示模式且未配置共享口令时保持开放后台。
+                    request.state.admin_auth = "open"
+                    actor = "knowledge-admin"
+                    principal.set(None)
             if required and personal:
                 if not request.state.user:
                     raise AuthFailure(401, "AUTH_REQUIRED", "请先登录。")
                 expected = request.headers.get("x-healthpilot-user")
                 if expected and expected != request.state.user["id"]:
                     raise AuthFailure(403, "SESSION_CHANGED", "登录账号已改变，请重新登录。")
-            if required and not admin and resource and request.method not in {"GET", "HEAD", "OPTIONS"}:
-                # 自定义头阻止跨站表单提交；不开放跨域携带凭证。
+            cookie_write = required and resource and request.method not in {"GET", "HEAD", "OPTIONS"}
+            if cookie_write and (not admin or request.state.admin_auth == "session"):
+                # 自定义头阻止跨站表单提交；不开放跨域携带凭证。Bearer 紧急口令不走 Cookie，免 CSRF 头。
                 origin = request.headers.get("origin")
                 if (request.headers.get("x-healthpilot-request") != "1"
                         or request.headers.get("sec-fetch-site") == "cross-site"
@@ -208,7 +235,7 @@ def attach_security(application, router, resource_path, version_headers):
             return {"required": False, "user": None}
         if not request.state.user:
             raise AuthFailure(401, "AUTH_REQUIRED", "请先登录。")
-        return {"required": True, "user": {k: request.state.user[k] for k in ("id", "username")},
+        return {"required": True, "user": {k: request.state.user[k] for k in ("id", "username", "role")},
                 "expires_at": request.state.user["expires_at"]}
 
     @router.post("/auth/login", response_model=SessionInfo, summary="登录并签发可撤销会话")

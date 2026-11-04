@@ -147,8 +147,11 @@ def test_passwords_limits_persistence_and_admin_boundary(secured, monkeypatch):
     reconnected.setup()
     assert reconnected.resolve(token)["id"] == users["alice"]["id"]
     for prefix in ("/api", "/api/v1"):
-        assert client.get(prefix + "/admin/documents", headers=headers(token)).status_code == 401
+        # 普通登录会话不能进后台；无共享口令时返回无权，而不是伪装成未登录。
+        denied = client.get(prefix + "/admin/documents", headers=headers(token))
+        assert denied.status_code == 403 and denied.json()["code"] == "ACCESS_DENIED"
         assert client.get(prefix + "/admin/documents", headers={"Authorization": "Bearer local-admin-test"}).status_code == 200
+    client.cookies.clear()
     monkeypatch.delenv("ADMIN_PASSWORD")
     assert client.get("/api/admin/documents").json()["code"] == "ADMIN_DISABLED"
 

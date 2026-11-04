@@ -80,6 +80,11 @@ class ApprovalList(BaseModel):
 
 
 def credential(request):
+    if getattr(request.state, "admin_auth", None) == "session":
+        user = getattr(request.state, "user", None) or {}
+        if user.get("role") != "knowledge_admin":
+            raise AuthFailure(401, "ADMIN_AUTH_REQUIRED", "管理员权限已改变，请重新登录。")
+        return digest("role-session:" + user["id"])
     supplied = request.headers.get("authorization", "")
     current = os.getenv("ADMIN_PASSWORD", "")
     if not current or not hmac.compare_digest(supplied.encode(), ("Bearer " + current).encode()):
