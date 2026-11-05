@@ -26,5 +26,17 @@ def test_ops_can_list_and_resolve_support_without_health_text(roles):
     _, ops = login(client, "opsadmin")
     resolved = client.post(f"/api/v1/admin/support/{task_id}/resolve", headers=cookie(ops))
     assert resolved.status_code == 200, resolved.text
+    assert resolved.json()["disposition"] == "support_resolved"
+    assert "胸痛" not in resolved.text
     again = client.get("/api/v1/admin/support", headers=cookie(ops)).json()["tasks"]
     assert task_id not in [row["id"] for row in again]
+    _, patient = login(client, "patient")
+    owned = client.get(f"/api/v1/tasks/{task_id}", headers=cookie(patient))
+    assert owned.status_code == 200, owned.text
+    assert owned.json()["review_disposition"] == "support_resolved"
+    assert "胸痛" not in owned.text
+    reopened = client.post(f"/api/v1/tasks/{task_id}/review", headers=cookie(patient), json={"disposition": "needs_support"})
+    assert reopened.status_code == 200 and reopened.json()["review_disposition"] == "needs_support"
+    _, ops = login(client, "opsadmin")
+    queued = client.get("/api/v1/admin/support", headers=cookie(ops)).json()["tasks"]
+    assert task_id in [row["id"] for row in queued]

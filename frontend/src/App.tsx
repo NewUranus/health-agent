@@ -194,7 +194,7 @@ export default function App() {
       return;
     }
     setRecovery(null);
-    setCancelMessage("已标记需要人工协助。系统只记录该标记，不会自动通知外部人员。");
+    setCancelMessage("已提交到运维协助队列。处理完成后可在任务记录查看。");
   }
 
   async function stopTask() {

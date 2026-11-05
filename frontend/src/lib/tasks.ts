@@ -6,7 +6,7 @@ export interface SavedTask {
   id: string; thread_id: string; status: string; request_id: string;
   created_at: number; updated_at: number; error_code: string | null; cancel_requested: boolean;
   health_committed?: boolean | null; failure_category?: string | null;
-  review_disposition?: "resolved" | "needs_support" | null;
+  review_disposition?: "resolved" | "needs_support" | "support_resolved" | null;
 }
 
 export async function responseProblem(response: Response): Promise<Error> {

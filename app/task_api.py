@@ -32,7 +32,7 @@ class TaskInfo(BaseModel):
     health_committed: bool | None = None
     checkpoint_bound: bool | None = None
     failure_category: str | None = None
-    review_disposition: Literal["resolved", "needs_support"] | None = None
+    review_disposition: Literal["resolved", "needs_support", "support_resolved"] | None = None
 
 
 class TaskReview(BaseModel):

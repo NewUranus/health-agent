@@ -127,13 +127,13 @@ def attach_operations(router):
         actor = request.state.user["id"] if getattr(request.state, "admin_auth", None) == "session" and request.state.user else "ops-admin"
         def save():
             with database.connection() as execute:
-                changed = execute("UPDATE hp_task_reviews SET disposition = 'resolved', reviewed_at = ?, request_id = ? WHERE task_id = ? AND disposition = 'needs_support'",
+                changed = execute("UPDATE hp_task_reviews SET disposition = 'support_resolved', reviewed_at = ?, request_id = ? WHERE task_id = ? AND disposition = 'needs_support'",
                                   (time.time_ns(), request.state.request_id, task_id)).rowcount
                 if not changed:
                     raise AuthFailure(404, "SUPPORT_NOT_FOUND", "没有待处理的人工协助标记。")
                 database._audit(execute, actor, "support.resolved", task_id, request.state.request_id, 200)
         await asyncio.to_thread(save)
-        return {"id": task_id, "disposition": "resolved"}
+        return {"id": task_id, "disposition": "support_resolved"}
 
     @router.get("/admin/audit", summary="按请求编号查询元数据审计")
     async def audit(request: Request, request_id: str = Query("", max_length=128), offset: int = Query(0, ge=0)):
