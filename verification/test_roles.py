@@ -97,6 +97,55 @@ def test_bearer_password_still_opens_all_admin(roles):
     assert client.get("/api/v1/admin/operations", headers=auth).status_code == 200
 
 
+def test_knowledge_session_can_reject_approval_without_shared_password(roles, monkeypatch):
+    client, _, _ = roles
+    monkeypatch.delenv("ADMIN_PASSWORD")
+    _, token = login(client, "knowadmin")
+    document = client.portal.call(client.app.state.agent.kb.create_draft, "角色确认资料", "测试来源", "v1",
+                                  [{"seq": 0, "page": 1, "heading": "测试", "text": "发布前核对。"}], "role.pdf")
+    created = client.post("/api/v1/admin/approvals", headers=cookie(token),
+                          json={"document_id": document["id"], "action": "publish"})
+    assert created.status_code == 201, created.text
+    approval = created.json()
+    rejected = client.post(f'/api/v1/admin/approvals/{approval["id"]}/decision', headers=cookie(token),
+                           json={"decision": "reject", "fingerprint": approval["fingerprint"]})
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["status"] == "rejected"
+    client.cookies.clear()
+    blocked = client.get("/api/v1/admin/approvals", headers={"Authorization": "Bearer leftover"})
+    assert blocked.status_code == 503 and blocked.json()["code"] == "ADMIN_DISABLED"
+
+
+def test_role_change_revokes_session_and_is_audited(roles):
+    client, store, accounts = roles
+    _, token = login(client, "knowadmin")
+    changed = store.assign_role("knowadmin", "user")
+    assert changed["changed"] is True and changed["role"] == "user"
+    assert client.get("/api/v1/auth/me", headers=cookie(token)).status_code == 401
+    unchanged = store.assign_role("knowadmin", "user")
+    assert unchanged["changed"] is False
+    with store.connection() as execute:
+        rows = execute("SELECT action, resource FROM hp_audit WHERE resource = ?", (accounts["knowledge"]["id"],)).fetchall()
+    assert any(row["action"] == "user.role_changed:knowledge_admin:user" for row in rows)
+
+
+def test_demotion_blocks_pending_approval(roles):
+    client, store, _ = roles
+    _, token = login(client, "knowadmin")
+    document = client.portal.call(client.app.state.agent.kb.create_draft, "降权确认资料", "测试来源", "v1",
+                                  [{"seq": 0, "page": 1, "heading": "测试", "text": "发布前核对。"}], "demote.pdf")
+    created = client.post("/api/v1/admin/approvals", headers=cookie(token),
+                          json={"document_id": document["id"], "action": "publish"})
+    assert created.status_code == 201, created.text
+    approval = created.json()
+    with store.connection() as execute:
+        execute("UPDATE hp_users SET role = 'user' WHERE username = 'knowadmin'")
+    denied = client.post(f'/api/v1/admin/approvals/{approval["id"]}/decision', headers=cookie(token),
+                         json={"decision": "approve", "fingerprint": approval["fingerprint"]})
+    assert denied.status_code == 403
+    assert denied.json()["code"] == "ACCESS_DENIED"
+
+
 def test_role_allows_admin_helper():
     assert role_allows_admin("knowledge_admin", "/admin/documents")
     assert role_allows_admin("knowledge_admin", "/admin/approvals")

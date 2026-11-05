@@ -11,6 +11,7 @@ from fastapi import Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.auth import AuthFailure, digest
+from app.idempotency import idempotent
 from app.database import schema_lock_sync
 from app.knowledge_review import preview, apply_review
 
@@ -82,7 +83,10 @@ class ApprovalList(BaseModel):
 def credential(request):
     if getattr(request.state, "admin_auth", None) == "session":
         user = getattr(request.state, "user", None) or {}
-        if user.get("role") != "knowledge_admin":
+        if user.get("role") != "knowledge_admin" or not user.get("id"):
+            raise AuthFailure(401, "ADMIN_AUTH_REQUIRED", "管理员权限已改变，请重新登录。")
+        # 执行前再读库，避免请求中途被降权后仍用旧会话确认。
+        if request.app.state.auth_store.current_role(user["id"]) != "knowledge_admin":
             raise AuthFailure(401, "ADMIN_AUTH_REQUIRED", "管理员权限已改变，请重新登录。")
         return digest("role-session:" + user["id"])
     supplied = request.headers.get("authorization", "")
@@ -218,16 +222,18 @@ def attach_approval_api(router):
     @router.post("/admin/approvals", status_code=201, response_model=ApprovalInfo, summary="生成待人工核对的知识变更确认单")
     async def create(request: Request, body: ApprovalRequest):
         store, epoch = require_approvals(request)
-        access = body.access.model_dump() if body.access else None
-        if access:
-            def check_accounts():
-                with store.db.connection() as execute:
-                    for user_id in access["allowed_user_ids"]:
-                        if not execute("SELECT id FROM hp_users WHERE id = ?", (user_id,)).fetchone():
-                            raise AuthFailure(422, "UNKNOWN_ACCOUNT", "指定账号不存在。")
-            await asyncio.to_thread(check_accounts)
-        fingerprint, summary = await preview(request.app.state.agent.kb, body.document_id, body.action, access=access)
-        return await asyncio.to_thread(store.create, epoch, body.action, body.document_id, fingerprint, summary, request.state.request_id)
+        async def create_approval():
+            access = body.access.model_dump() if body.access else None
+            if access:
+                def check_accounts():
+                    with store.db.connection() as execute:
+                        for user_id in access["allowed_user_ids"]:
+                            if not execute("SELECT id FROM hp_users WHERE id = ?", (user_id,)).fetchone():
+                                raise AuthFailure(422, "UNKNOWN_ACCOUNT", "指定账号不存在。")
+                await asyncio.to_thread(check_accounts)
+            fingerprint, summary = await preview(request.app.state.agent.kb, body.document_id, body.action, access=access)
+            return await asyncio.to_thread(store.create, epoch, body.action, body.document_id, fingerprint, summary, request.state.request_id)
+        return await idempotent(request, "approvals:" + epoch[:12], body.model_dump(), create_approval)
 
     @router.get("/admin/approvals", response_model=ApprovalList, summary="查询当前管理员凭证下的确认记录")
     async def list_approvals(request: Request):

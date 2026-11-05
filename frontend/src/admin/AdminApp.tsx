@@ -138,11 +138,12 @@ export default function AdminApp() {
 
   const title = sessionRole === "ops_admin" ? "运维后台" : sessionRole === "knowledge_admin" ? "知识库后台" : "管理后台";
   const subtitle = sessionRole === "ops_admin" ? "队列、审计与运行观测" : "内容发布前请人工核对";
+  const roleLabel = sessionRole === "ops_admin" ? "运维管理员" : sessionRole === "knowledge_admin" ? "知识管理员" : "";
 
   return <main className="admin-shell">
     <header className="admin-header">
       <div><a href={roleSession ? "/admin" : "/"} className="admin-brand">HealthPilot</a><h1>{title}</h1><p>{subtitle}</p></div>
-      {roleSession && <button onClick={() => auth.logout()} disabled={auth.busy}>退出登录</button>}
+      {roleSession && <div><span>{roleLabel}</span> <button onClick={() => auth.logout()} disabled={auth.busy}>退出登录</button></div>}
       {!roleSession && access === "locked" && token && <button onClick={() => { storePassword(""); setToken(""); setPassword(""); setError(""); setDocuments([]); }}>退出登录</button>}
     </header>
     {error && <p role="alert" className="admin-error">{error}</p>}

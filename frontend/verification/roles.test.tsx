@@ -29,6 +29,7 @@ describe("后台角色页签", () => {
     }));
     renderAdmin("knowledge_admin");
     await screen.findByRole("heading", { name: "知识库后台" });
+    expect(screen.getByText("知识管理员")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "文档" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "确认记录" })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "运行状态" })).not.toBeInTheDocument();

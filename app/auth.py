@@ -152,10 +152,11 @@ class AuthStore:
             if bool(user) != reset:
                 raise ValueError("账号不存在。" if reset else "账号已存在。")
             user_id = user["id"] if user else uuid.uuid4().hex
+            previous = user["role"] if user and user["role"] in ROLES else "user"
             if reset:
                 if role is None:
                     execute("UPDATE hp_users SET password_hash = ? WHERE id = ?", (hashed, user_id))
-                    role = user["role"] if user["role"] in ROLES else "user"
+                    role = previous
                 else:
                     execute("UPDATE hp_users SET password_hash = ?, role = ? WHERE id = ?", (hashed, role, user_id))
                 execute("DELETE FROM hp_sessions WHERE user_id = ?", (user_id,))
@@ -163,7 +164,33 @@ class AuthStore:
                 execute("INSERT INTO hp_users (id, username, password_hash, created_at, role) VALUES (?, ?, ?, ?, ?)",
                         (user_id, username, hashed, int(time.time()), role))
             self._audit(execute, "local-operator", "user.password_reset" if reset else "user.created", user_id, uuid.uuid4().hex, 200)
+            if reset and role != previous:
+                self._audit(execute, "local-operator", f"user.role_changed:{previous}:{role}", user_id, uuid.uuid4().hex, 200)
         return {"id": user_id, "username": username, "role": role}
+
+    def assign_role(self, username, role):
+        """更改角色并注销该账号全部会话。角色未变时不写审计。"""
+        username = username.strip().lower()
+        if not valid_role(role):
+            raise ValueError("角色须为 user、knowledge_admin 或 ops_admin。")
+        with self.connection() as execute:
+            user = execute("SELECT id, role FROM hp_users WHERE username = ?", (username,)).fetchone()
+            if not user:
+                raise ValueError("账号不存在。")
+            previous = user["role"] if user["role"] in ROLES else "user"
+            if previous == role:
+                return {"id": user["id"], "username": username, "role": role, "changed": False}
+            execute("UPDATE hp_users SET role = ? WHERE id = ?", (role, user["id"]))
+            execute("DELETE FROM hp_sessions WHERE user_id = ?", (user["id"],))
+            self._audit(execute, "local-operator", f"user.role_changed:{previous}:{role}", user["id"], uuid.uuid4().hex, 200)
+        return {"id": user["id"], "username": username, "role": role, "changed": True}
+
+    def current_role(self, user_id):
+        with self.connection() as execute:
+            row = execute("SELECT role FROM hp_users WHERE id = ?", (user_id,)).fetchone()
+        if not row:
+            return None
+        return row["role"] if row["role"] in ROLES else "user"
 
     def _reserve_attempt(self, username, client):
         now = int(time.time())
@@ -231,21 +258,33 @@ class AuthStore:
 
 def main():
     parser = argparse.ArgumentParser(description="本地管理 HealthPilot 账号；密码不会作为命令参数或输出。")
-    parser.add_argument("action", choices=["create-user", "reset-password"])
+    parser.add_argument("action", choices=["create-user", "reset-password", "set-role"])
     parser.add_argument("username")
     parser.add_argument("--role", choices=sorted(ROLES), help="账号角色；创建时默认 user，重置时仅在显式传入时更改。")
     args = parser.parse_args()
     load_dotenv(ROOT / ".env")
-    password = getpass.getpass("密码（至少 12 个字符）：")
-    if password != getpass.getpass("再次输入密码："):
-        parser.exit(1, "两次密码不一致。\n")
     store = AuthStore()
     store.setup()
     try:
-        store.provision(args.username, password, reset=args.action == "reset-password", role=args.role)
+        if args.action == "set-role":
+            if not args.role:
+                parser.error("set-role 必须指定 --role。")
+            result = store.assign_role(args.username, args.role)
+        else:
+            password = getpass.getpass("密码（至少 12 个字符）：")
+            if password != getpass.getpass("再次输入密码："):
+                parser.exit(1, "两次密码不一致。\n")
+            result = store.provision(args.username, password, reset=args.action == "reset-password", role=args.role)
     except ValueError as exc:
         parser.exit(1, str(exc) + "\n")
-    print("账号已创建。" if args.action == "create-user" else "密码已重置，旧登录会话已注销。")
+    if args.action == "create-user":
+        print("账号已创建。")
+    elif args.action == "reset-password":
+        print("密码已重置，旧登录会话已注销。")
+    elif result["changed"]:
+        print("角色已更新，旧登录会话已注销。")
+    else:
+        print("角色未变化。")
 
 
 if __name__ == "__main__":
