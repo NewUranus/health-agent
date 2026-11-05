@@ -30,6 +30,7 @@ class TaskInfo(BaseModel):
     updated_at: int
     cancel_requested: bool
     health_committed: bool | None = None
+    checkpoint_bound: bool | None = None
     failure_category: str | None = None
     review_disposition: Literal["resolved", "needs_support"] | None = None
 
@@ -46,6 +47,24 @@ class TaskList(BaseModel):
 class EventPage(BaseModel):
     task: TaskInfo
     events: list[dict]
+
+
+async def relay_task_events(request, store, task_id, user_id):
+    """把已持久化的任务事件按 SSE 回放；重复请求不再执行图。"""
+    cursor = 0
+    while True:
+        if await request.is_disconnected():
+            return
+        task, rows = await asyncio.to_thread(store.events, task_id, user_id, cursor)
+        filtered = await request.app.state.agent.kb.sanitize_events([row["event"] for row in rows], "account:" + user_id)
+        rows = [{**row, "event": event} for row, event in zip(rows, filtered)]
+        for row in rows:
+            cursor = row["seq"]
+            yield "data: " + json.dumps({**row["event"], "seq": cursor}, ensure_ascii=False) + "\n\n"
+        if task["status"] in TERMINAL and len(rows) < 200:
+            return
+        if not rows:
+            await asyncio.sleep(0.25)
 
 
 def require_tasks(request):

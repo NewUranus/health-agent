@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import re
 import time
 from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
@@ -25,7 +26,8 @@ from app.auth import AuthFailure, AuthStore, COOKIE_NAME
 from app.approvals import ApprovalStore, attach_approval_api
 from app.http_security import attach_security, auth_required, current_identity, error_response, ErrorInfo
 from app.tasks import TaskRunner, TaskStore
-from app.task_api import attach_task_api
+from app.idempotency import idempotent, payload_hash
+from app.task_api import attach_task_api, relay_task_events
 from app.knowledge_archive import attach_knowledge_archive
 from app.conversations import attach_conversations
 from app.operations import attach_operations
@@ -219,15 +221,20 @@ def create_app():
                 raise HTTPException(400, str(exc)) from None
             if not chunks:
                 raise HTTPException(400, "没有可用的文字片段。")
+            file_hash = payload_hash({"bytes": data.hex(), "name": file.filename or ""})
+            fields = {"title": title.strip(), "source": source, "version": version, "file": file_hash}
             if request.url.path.endswith('/document-pairs'):
-                cleaned = await asyncio.to_thread(clean_pages, pages)
-                clean_chunks = await asyncio.to_thread(chunk_pages, cleaned)
-                if not clean_chunks:
-                    raise HTTPException(400, "清洗后没有可用的文字片段。")
-                documents = await application.state.agent.kb.create_comparison(
-                    title.strip(), source, version, chunks, clean_chunks, file.filename or '')
-                return {'documents': documents}
-            return await application.state.agent.kb.create_draft(title.strip(), source, version, chunks, file.filename or "")
+                async def create_pair():
+                    cleaned = await asyncio.to_thread(clean_pages, pages)
+                    clean_chunks = await asyncio.to_thread(chunk_pages, cleaned)
+                    if not clean_chunks:
+                        raise HTTPException(400, "清洗后没有可用的文字片段。")
+                    documents = await application.state.agent.kb.create_comparison(
+                        title.strip(), source, version, chunks, clean_chunks, file.filename or '')
+                    return {'documents': documents}
+                return await idempotent(request, "document-pairs", fields, create_pair)
+            return await idempotent(request, "documents", fields, lambda: application.state.agent.kb.create_draft(
+                title.strip(), source, version, chunks, file.filename or ""))
         finally:
             await form.close()
 
@@ -305,6 +312,16 @@ def create_app():
     async def chat(request: Request, body: ChatRequest):
         user_id = current_identity(request, body.user_id, body.thread_id)
         thread_id = body.thread_id
+        idempotency_key = request.headers.get("idempotency-key")
+        if required and idempotency_key:
+            if not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", idempotency_key):
+                raise AuthFailure(422, "INVALID_IDEMPOTENCY_KEY", "幂等键须为 8–128 位字母、数字或 . _ : -。")
+            await asyncio.to_thread(application.state.auth_store.claim_thread, thread_id, request.state.user["id"])
+            task, _ = await asyncio.to_thread(application.state.task_store.submit, request.state.user["id"], "chat:" + idempotency_key,
+                                              {"thread_id": body.thread_id, "message": body.message, "web_search": body.web_search}, request.state.request_id)
+            response = StreamingResponse(relay_task_events(request, application.state.task_store, task["id"], request.state.user["id"]),
+                                         media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-Task-ID": task["id"]})
+            return response
         if required:
             thread_id = await asyncio.to_thread(application.state.auth_store.claim_thread, thread_id, request.state.user["id"])
         async def events():

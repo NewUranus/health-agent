@@ -37,6 +37,8 @@ class TaskStore:
                 "CREATE TABLE IF NOT EXISTS hp_task_events (task_id TEXT NOT NULL REFERENCES hp_tasks(id), seq INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(task_id, seq))",
                 "CREATE TABLE IF NOT EXISTS hp_task_slots (user_id TEXT PRIMARY KEY REFERENCES hp_users(id), task_id TEXT NOT NULL REFERENCES hp_tasks(id))",
                 "CREATE TABLE IF NOT EXISTS hp_task_effects (task_id TEXT NOT NULL REFERENCES hp_tasks(id), kind TEXT NOT NULL, payload_hash TEXT NOT NULL, committed_at BIGINT NOT NULL, PRIMARY KEY(task_id, kind))",
+                "CREATE TABLE IF NOT EXISTS hp_task_checkpoints (task_id TEXT PRIMARY KEY REFERENCES hp_tasks(id), thread_id TEXT NOT NULL, checkpoint_id TEXT NOT NULL, committed_at BIGINT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS hp_write_idempotency (user_id TEXT NOT NULL, scope TEXT NOT NULL, idempotency_key TEXT NOT NULL, payload_hash TEXT NOT NULL, result TEXT, created_at BIGINT NOT NULL, PRIMARY KEY (user_id, scope, idempotency_key))",
                 "CREATE TABLE IF NOT EXISTS hp_conversations (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES hp_users(id), thread_id TEXT NOT NULL, title TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0, updated_at BIGINT NOT NULL, UNIQUE(user_id, thread_id))",
                 "CREATE INDEX IF NOT EXISTS hp_conversations_user ON hp_conversations(user_id, archived, updated_at)",
                 "CREATE TABLE IF NOT EXISTS hp_queue_gate (id INTEGER PRIMARY KEY)",
@@ -61,6 +63,7 @@ class TaskStore:
                 "updated_at": row["updated_at"] // 1_000_000,
                 "cancel_requested": bool(row["cancel_requested"]),
                 "health_committed": bool(row["health_committed"]) if "health_committed" in row.keys() and row["health_committed"] is not None else None,
+                "checkpoint_bound": bool(row["checkpoint_bound"]) if "checkpoint_bound" in row.keys() and row["checkpoint_bound"] is not None else None,
                 "failure_category": {"failed": "execution", "cancelled": "cancelled", "timed_out": "timeout", "interrupted": "infrastructure"}.get(row["status"]),
                 "review_disposition": row["review_disposition"] if "review_disposition" in row.keys() else None}
 
@@ -68,7 +71,8 @@ class TaskStore:
     def select_public(self):
         # SQLite 任务与内存健康记录不在同一事务内，不能声称已确认持久化。
         committed = "EXISTS (SELECT 1 FROM hp_task_effects e WHERE e.task_id = hp_tasks.id)" if self.db.url else "NULL"
-        return f"SELECT hp_tasks.*, {committed} AS health_committed, (SELECT disposition FROM hp_task_reviews r WHERE r.task_id = hp_tasks.id) AS review_disposition FROM hp_tasks"
+        checkpoint = "EXISTS (SELECT 1 FROM hp_task_checkpoints c WHERE c.task_id = hp_tasks.id)" if self.db.url else "NULL"
+        return f"SELECT hp_tasks.*, {committed} AS health_committed, {checkpoint} AS checkpoint_bound, (SELECT disposition FROM hp_task_reviews r WHERE r.task_id = hp_tasks.id) AS review_disposition FROM hp_tasks"
 
     @staticmethod
     def _event(execute, task_id, event):
@@ -220,13 +224,56 @@ class TaskStore:
             self._event(execute, task_id, event)
             return True
 
-    def finish(self, task_id, token, status, code=None, message=None):
+    def reserve_write(self, user_id, scope, key, payload_hash):
+        import re
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", key):
+            raise AuthFailure(422, "INVALID_IDEMPOTENCY_KEY", "幂等键须为 8–128 位字母、数字或 . _ : -。")
+        with self.db.connection() as execute:
+            suffix = " FOR UPDATE" if self.db.url else ""
+            row = execute("SELECT payload_hash, result FROM hp_write_idempotency WHERE user_id = ? AND scope = ? AND idempotency_key = ?" + suffix,
+                          (user_id, scope, key)).fetchone()
+            if row:
+                if row["payload_hash"] != payload_hash:
+                    raise AuthFailure(409, "IDEMPOTENCY_CONFLICT", "同一幂等键对应不同请求，请勿修改后重用。")
+                if row["result"]:
+                    return json.loads(row["result"])
+                raise AuthFailure(409, "IDEMPOTENCY_IN_PROGRESS", "相同幂等键的请求正在处理，请稍后重试。")
+            execute("INSERT INTO hp_write_idempotency VALUES (?, ?, ?, ?, NULL, ?)",
+                    (user_id, scope, key, payload_hash, time.time_ns()))
+        return None
+
+    def complete_write(self, user_id, scope, key, result):
+        with self.db.connection() as execute:
+            execute("UPDATE hp_write_idempotency SET result = ? WHERE user_id = ? AND scope = ? AND idempotency_key = ?",
+                    (json.dumps(result, ensure_ascii=False), user_id, scope, key))
+
+    def release_write(self, user_id, scope, key):
+        with self.db.connection() as execute:
+            execute("DELETE FROM hp_write_idempotency WHERE user_id = ? AND scope = ? AND idempotency_key = ? AND result IS NULL",
+                    (user_id, scope, key))
+
+    def _bind_checkpoint(self, execute, task_id, graph_thread):
+        """与任务终态同一事务记录当前检查点；没有 PostgreSQL 检查点表时跳过。"""
+        if not self.db.url or not graph_thread:
+            return
+        relation = execute("SELECT to_regclass('public.checkpoints') AS name").fetchone()
+        if not relation or not relation["name"]:
+            return
+        latest = execute("SELECT checkpoint_id FROM checkpoints WHERE thread_id = ? AND checkpoint_ns = '' ORDER BY checkpoint->>'ts' DESC LIMIT 1",
+                         (graph_thread,)).fetchone()
+        if not latest:
+            return
+        execute("INSERT INTO hp_task_checkpoints VALUES (?, ?, ?, ?) ON CONFLICT (task_id) DO UPDATE SET thread_id = excluded.thread_id, checkpoint_id = excluded.checkpoint_id, committed_at = excluded.committed_at",
+                (task_id, graph_thread, latest["checkpoint_id"], time.time_ns()))
+
+    def finish(self, task_id, token, status, code=None, message=None, graph_thread=None):
         with self.db.connection() as execute:
             row = self._lock_task(execute, task_id)
             if row and row["status"] == "running" and row["worker_token"] == token:
                 if row["cancel_requested"]:
                     status, code, message = "cancelled", "TASK_CANCELLED", "任务已停止，已产生的记录不会回滚。"
                 self._finish(execute, row, status, code, message)
+                self._bind_checkpoint(execute, row["id"], graph_thread)
 
 
 class TaskRunner:
@@ -299,9 +346,15 @@ class TaskRunner:
         task_id, token = job["id"], job["worker_token"]
         context = request_id_context.set(job["request_id"])
         execution_context = task_execution.set(TaskExecution(task_id, token, job["user_id"]))
+        graph_thread = {"value": None}
+
+        def settle(status, code=None, message=None):
+            self.store.finish(task_id, token, status, code, message, graph_thread["value"])
+
         async def consume():
             payload = json.loads(job["payload"])
             thread = await asyncio.to_thread(self.store.db.claim_thread, payload["thread_id"], job["user_id"])
+            graph_thread["value"] = thread
             failed, waiting, complete, message_seen = False, False, False, False
             async with aclosing(self.agent.stream(thread, payload["message"], "account:" + job["user_id"],
                                                   web_search=payload.get("web_search", False))) as stream:
@@ -317,7 +370,7 @@ class TaskRunner:
                     if not await asyncio.to_thread(self.store.append, task_id, token, event):
                         raise asyncio.CancelledError()
             status = "failed" if failed or not complete or not message_seen else "waiting_human" if waiting else "succeeded"
-            await asyncio.to_thread(self.store.finish, task_id, token, status,
+            await asyncio.to_thread(settle, status,
                                     "AGENT_EXECUTION_FAILED" if status == "failed" else None,
                                     "任务未能完整返回，请检查已有记录。" if not complete or not message_seen else None)
 
@@ -339,19 +392,19 @@ class TaskRunner:
             with suppress(asyncio.CancelledError):
                 await execution
             status, code, message = ("cancelled", "TASK_CANCELLED", "任务已停止，已产生的记录不会回滚。") if done else ("timed_out", "TASK_TIMEOUT", "任务超时，请先核对已有记录。")
-            await asyncio.to_thread(self.store.finish, task_id, token, status, code, message)
+            await asyncio.to_thread(settle, status, code, message)
         except asyncio.CancelledError:
             execution.cancel()
             with suppress(asyncio.CancelledError):
                 await execution
-            await asyncio.to_thread(self.store.finish, task_id, token, "interrupted", "WORKER_STOPPED", "执行服务已停止，请核对已有记录。")
+            await asyncio.to_thread(settle, "interrupted", "WORKER_STOPPED", "执行服务已停止，请核对已有记录。")
             raise
         except Exception as exc:
             execution.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await execution
             emit("task.execution.failed", level="ERROR", error_type=type(exc).__name__)
-            await asyncio.to_thread(self.store.finish, task_id, token, "failed", "TASK_EXECUTION_FAILED", "任务执行失败，请核对已有记录。")
+            await asyncio.to_thread(settle, "failed", "TASK_EXECUTION_FAILED", "任务执行失败，请核对已有记录。")
         finally:
             watcher.cancel()
             with suppress(asyncio.CancelledError, Exception):

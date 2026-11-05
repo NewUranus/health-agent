@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from fastapi import Query, Request
 from pydantic import BaseModel, ConfigDict, Field
+from app.idempotency import idempotent
 from app.knowledge import KnowledgeError
 from app.ingest import chunk_pages
 
@@ -63,4 +64,6 @@ def attach_knowledge_archive(router):
         chunks = chunk_pages([{"page": 1, "text": body.text}])
         if not body.title.strip() or not chunks:
             raise KnowledgeError("标题与正文不能为空。")
-        return await request.app.state.agent.kb.create_draft(body.title.strip(), body.source, body.version, chunks, "text-import.md")
+        async def create():
+            return await request.app.state.agent.kb.create_draft(body.title.strip(), body.source, body.version, chunks, "text-import.md")
+        return await idempotent(request, "text-documents", body.model_dump(), create)
