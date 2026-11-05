@@ -83,4 +83,23 @@ bash ops/release.sh rollback
 
 后端检查改为失败即停、逐条显示用例名；超过 60 秒的用例打印等待堆栈，整步五分钟后终止，必要时 15 秒后强制结束。检查作业总上限十五分钟，前端与依赖步骤分别限时；同一分支的新代码检查取消旧检查。镜像仅在检查成功后发布，不将超时或失败伪装成成功。
 
-纯文档运行成功不代表该 SHA 有镜像。部署程序必须选择镜像发布任务实际成功的版本；当前本地 `healthpilot-deploy` 若仍取远端 HEAD，纯文档提交后可能拉取不到对应镜像。现有镜像不会因为文档更新自动改变。
+纯文档运行成功不代表该 SHA 有镜像。自动部署依赖 `publish-image` 作业成功，部署本次工作流的完整 SHA；纯文档推送不发布镜像、不触发部署。旧的本地 `healthpilot-deploy` 仍按远端 HEAD 选版本，不建议与自动部署并发使用。
+
+## GitHub Actions 自动部署
+
+`main` 的 push 经检查和镜像发布后执行 `deploy` 作业。PR、其他分支、手动验收和跳过镜像的运行不会自动部署。GitHub 并发组与服务器文件锁避免同时更新容器，服务器拒绝历史分叉和非 main 提交，跳过已经被新版本取代的部署。
+
+仓库 Actions 配置：
+
+| 类型 | 名称 | 用途 |
+|---|---|---|
+| Secret | `HEALTHPILOT_DEPLOY_SSH_KEY` | 独立的 Ed25519 部署私钥 |
+| Secret | `HEALTHPILOT_DEPLOY_KNOWN_HOSTS` | 从可信连接取得的服务器主机公钥，不在每次构建时盲目信任扫描结果 |
+| Variable | `HEALTHPILOT_DEPLOY_HOST` | `用户@主机`，SSH 端口 22 |
+| Variable | `HEALTHPILOT_DEPLOY_ENABLED` | 服务器安装与检查成功后设为 `true`；设为 `false` 可暂停后续自动部署 |
+
+服务器初始化：将 `ops/ci-deploy.sh`、`ops/install-ci-deploy.sh` 和部署公钥送到服务器同一临时目录，用现有管理员连接运行 `bash install-ci-deploy.sh 公钥文件`。安装器保留已有授权，将入口复制到 `/usr/local/libexec/healthpilot-ci-deploy`，专用公钥只允许 `check` 与 `deploy 完整SHA`，禁止交互 shell、PTY 和转发。私钥只交给 Actions，应用 `.env` 继续保留在服务器。服务器需能无交互读取 GitHub 仓库及公开 GHCR 镜像，部署目录默认为 `/root/health-agent`。
+
+先用新密钥连接并执行 `check`，通过后再启用开关。部署入口先拉取固定 SHA 镜像，再将服务器代码快进到相同提交，最后调用 `ops/release.sh` 更新 API 和 Worker。保留服务器自定义 Caddyfile；目标提交同时修改该文件时停止。现有代码回滚不回滚数据库。
+
+入口更新需通过管理员连接重新运行安装器，专用密钥不能替换自身授权配置。密钥轮换时先安装新公钥，替换 GitHub Secret 并验证，再删除旧公钥。停用自动部署时关闭开关；撤销凭证还需从服务器 `authorized_keys` 移除对应公钥。

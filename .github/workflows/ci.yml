@@ -74,6 +74,8 @@ jobs:
           python-version: "3.12"
       - run: uv sync --locked
         timeout-minutes: 3
+      - name: 自动部署边界检查
+        run: python -m unittest verification/test_ci_deploy.py -v
       - name: 后端检查（失败即停，最多五分钟）
         timeout-minutes: 6
         run: timeout --signal=TERM --kill-after=15s 5m uv run pytest -x -vv -ra -o faulthandler_timeout=60
@@ -162,3 +164,47 @@ jobs:
       - name: 清理验证容器
         if: always()
         run: docker rm --force healthpilot-smoke || true
+
+  deploy:
+    name: 部署到演示服务器
+    needs: publish-image
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && vars.HEALTHPILOT_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions: {}
+    concurrency:
+      group: healthpilot-production
+      # 不在更新容器时取消部署；服务器还会拒绝旧提交覆盖新版本。
+      cancel-in-progress: false
+    env:
+      DEPLOY_HOST: ${{ vars.HEALTHPILOT_DEPLOY_HOST }}
+    steps:
+      - name: 配置部署专用 SSH 凭证
+        env:
+          DEPLOY_KEY: ${{ secrets.HEALTHPILOT_DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.HEALTHPILOT_DEPLOY_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$DEPLOY_HOST" && -n "$DEPLOY_KEY" && -n "$DEPLOY_KNOWN_HOSTS" ]] || { echo '缺少部署主机或 SSH Secrets。' >&2; exit 1; }
+          umask 077
+          mkdir -p "$RUNNER_TEMP/healthpilot-ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/healthpilot-ssh/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/healthpilot-ssh/known_hosts"
+          ssh-keygen -y -P '' -f "$RUNNER_TEMP/healthpilot-ssh/key" >/dev/null
+      - name: 部署本次已发布的提交
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_HOST" =~ ^[a-z_][a-z0-9_-]*@[a-zA-Z0-9.-]+$ ]] || { echo '部署主机格式无效。' >&2; exit 1; }
+          [[ "$GITHUB_SHA" =~ ^[a-f0-9]{40}$ ]]
+          ssh -T -F /dev/null -i "$RUNNER_TEMP/healthpilot-ssh/key" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/healthpilot-ssh/known_hosts" \
+            -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+            "$DEPLOY_HOST" "deploy $GITHUB_SHA"
+          printf '部署请求已完成，提交：`%s`。具体部署或跳过原因见日志。\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: 清理临时 SSH 凭证
+        if: always()
+        shell: bash
+        run: rm -rf -- "$RUNNER_TEMP/healthpilot-ssh"
