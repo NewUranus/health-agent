@@ -7,11 +7,13 @@ type Overview = { release: string; tasks: Record<string, number>; workers: { id:
   alerts: { code: string; message: string; level: string }[]; failures_24h: { error_code: string; count: number }[] };
 type Audit = { id: string; at: number; action: string; actor: string; resource: string; request_id: string; status: number };
 type Queued = { id: string; status: string; priority: number; request_id: string };
+type SupportTask = { id: string; status: string; error_code: string | null; request_id: string; username: string; created_at: number; reviewed_at: number };
 const statuses: Record<string, string> = { pending: "排队", running: "执行中", waiting_human: "等待回答", succeeded: "成功", failed: "失败", cancelled: "取消", timed_out: "超时", interrupted: "中断" };
 
 export function Operations({ api }: { api: AdminApi }) {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [queue, setQueue] = useState<Queued[]>([]);
+  const [support, setSupport] = useState<SupportTask[]>([]);
   const [records, setRecords] = useState<Audit[]>([]);
   const [requestId, setRequestId] = useState("");
   const [filter, setFilter] = useState("");
@@ -23,8 +25,12 @@ export function Operations({ api }: { api: AdminApi }) {
     const controller = new AbortController(); let timer: ReturnType<typeof setTimeout>;
     async function refresh() {
       try {
-        const [next, queued] = await Promise.all([api<Overview>("/operations", { signal: controller.signal }), api<{ tasks: Queued[] }>("/queue", { signal: controller.signal })]);
-        if (!controller.signal.aborted) { setOverview(next); setQueue(queued.tasks); setError(""); timer = setTimeout(() => void refresh(), 10000); }
+        const [next, queued, waiting] = await Promise.all([
+          api<Overview>("/operations", { signal: controller.signal }),
+          api<{ tasks: Queued[] }>("/queue", { signal: controller.signal }),
+          api<{ tasks: SupportTask[] }>("/support", { signal: controller.signal }),
+        ]);
+        if (!controller.signal.aborted) { setOverview(next); setQueue(queued.tasks); setSupport(waiting.tasks); setError(""); timer = setTimeout(() => void refresh(), 10000); }
       } catch (reason) { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "运行状态读取失败。"); }
     }
     void refresh(); return () => { controller.abort(); clearTimeout(timer); };
@@ -36,6 +42,12 @@ export function Operations({ api }: { api: AdminApi }) {
       .catch(reason => { if (!controller.signal.aborted) setError(reason.message); });
     return () => controller.abort();
   }, [api, filter, offset, revision]);
+  async function resolveSupport(id: string) {
+    setBusy(true);
+    try { await api(`/support/${id}/resolve`, { method: "POST" }); setRevision(value => value + 1); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "协助标记未更新。"); }
+    finally { setBusy(false); }
+  }
   async function mutate(path: string, body: object) {
     setBusy(true);
     try { await api(path, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); setRevision(value => value + 1); }
@@ -54,6 +66,11 @@ export function Operations({ api }: { api: AdminApi }) {
       <p>{Object.entries(overview.tasks).map(([key, value]) => `${statuses[key] ?? key} ${value}`).join(" · ")}</p>
       <h3>最近 24 小时失败分类</h3><ul>{overview.failures_24h.map(row => <li key={row.error_code}>{row.error_code || "未分类"}：{row.count}</li>)}</ul>
     </>}
+    <h3>人工协助</h3><p>只显示用户标记为需要协助的任务编号和账号，不包含健康正文。标记已处理后从队列移除。</p>
+    <ul className="admin-list">{support.map(task => <li key={task.id}><strong>{task.username}</strong> · {statuses[task.status] ?? task.status}
+      <small>{task.error_code || "未分类"} · {task.id.slice(0, 8)} · {new Date(task.reviewed_at * 1000).toLocaleString("zh-CN")}</small>
+      <button type="button" disabled={busy} onClick={() => void resolveSupport(task.id)}>标记已处理</button></li>)}
+      {!support.length && <li>当前没有待处理的人工协助。</li>}</ul>
     <h3>任务调度</h3><p>优先级 0–9，数字越大越优先；同账号仍串行执行。</p>
     <ul className="admin-list">{queue.map(task => <li key={task.id}><strong>{task.id.slice(0, 8)}</strong> · {statuses[task.status] ?? task.status}
       <label>调度优先级<select value={task.priority} disabled={busy || task.status !== "pending"} onChange={event => void mutate(`/queue/${task.id}/priority`, { priority: Number(event.target.value) })}>

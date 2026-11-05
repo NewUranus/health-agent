@@ -24,7 +24,7 @@ _KNOWLEDGE_ADMIN = frozenset({
     "documents", "document-pairs", "approvals", "knowledge-archives", "text-documents",
     "chunks", "search", "compare", "stats", "accounts", "model-usage",
 })
-_OPS_ADMIN = frozenset({"operations", "queue", "admission", "audit", "metrics", "logs", "traces"})
+_OPS_ADMIN = frozenset({"operations", "queue", "admission", "audit", "metrics", "logs", "traces", "support"})
 
 
 class AuthFailure(Exception):

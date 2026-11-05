@@ -10,8 +10,11 @@ import { ExecutionProgress } from "./components/ExecutionProgress";
 import { ConversationsPanel } from "./components/ConversationsPanel";
 import { TasksPanel } from "./components/TasksPanel";
 import { runTask } from "./lib/tasks";
+import { recoveryMode, recoveryNote, type RecoveryMode } from "./lib/recovery";
 import { createSseParser } from "./lib/sse";
 import { createId, initialSession, saveUserId, sessionReducer } from "./lib/session";
+
+type Recovery = { mode: RecoveryMode; text: string; key: string; taskId: string | null; note: string };
 
 const examples = [
   ["开始一次风险评估 ↗", "男，55岁，血压140/90，总胆固醇5.5，HDL 1.3，不吸烟，没有糖尿病，没吃降压药"],
@@ -27,6 +30,7 @@ export default function App() {
   const [activeTask, setActiveTask] = useState<string | null>(null);
   const [conversationArchived, setConversationArchived] = useState(false);
   const [cancelMessage, setCancelMessage] = useState("");
+  const [recovery, setRecovery] = useState<Recovery | null>(null);
   const [input, setInput] = useState("");
   const [webSearch, setWebSearch] = useState(false);
   const [traceVisible, setTraceVisible] = useState(true);
@@ -73,17 +77,44 @@ export default function App() {
     if (messages.current) messages.current.scrollTop = messages.current.scrollHeight;
   }, [session.messages]);
 
-  async function send(text: string) {
+  async function settleRecovery(text: string, key: string, taskId: string | null) {
+    if (!auth.user) {
+      setRecovery({ mode: "resubmit", text, key, taskId: null, note: "本轮未完成，可以重新提交。" });
+      return;
+    }
+    if (!taskId) {
+      setRecovery({ mode: "reconnect", text, key, taskId: null, note: recoveryNote("reconnect", null) });
+      return;
+    }
+    try {
+      const response = await apiFetch(`/api/v1/tasks/${taskId}`);
+      if (!response.ok) throw new Error();
+      const task = await response.json();
+      if (task.status === "succeeded" || task.status === "waiting_human") {
+        setRecovery(null);
+        return;
+      }
+      const mode = recoveryMode(task);
+      setRecovery({ mode, text, key, taskId, note: recoveryNote(mode, task.health_committed) });
+    } catch {
+      setRecovery({ mode: "reconnect", text, key, taskId, note: recoveryNote("reconnect", null) });
+    }
+  }
+
+  async function send(text: string, reuseKey?: string) {
     text = text.trim();
     if (activeRequest.current || session.busy || conversationArchived || !text) return;
-    setActiveTask(null); setCancelMessage("");
+    setActiveTask(null); setCancelMessage(""); setRecovery(null);
     const controller = new AbortController();
     activeRequest.current = controller;
+    const idempotencyKey = reuseKey || createId();
+    let submittedTask: string | null = null;
     dispatch({ type: "send", text });
     setInput("");
     let gotDone = false;
     let gotMessage = false;
     let gotError = false;
+    let failedTurn = false;
     let status = "连接未完成";
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
@@ -93,12 +124,16 @@ export default function App() {
         if (event.type === "message") gotMessage = true;
         if (event.type === "error") {
           gotError = true;
+          failedTurn = event.code !== "AUTH_REQUIRED";
           if ("code" in event && event.code === "AUTH_REQUIRED") sessionExpired();
         }
         dispatch({ type: "event", event });
       };
       if (auth.user) {
-        await runTask({ thread_id: session.threadId, message: text, web_search: webSearch }, createId(), controller.signal, onEvent, task => setActiveTask(task.id));
+        await runTask({ thread_id: session.threadId, message: text, web_search: webSearch }, idempotencyKey, controller.signal, onEvent, task => {
+          submittedTask = task.id;
+          setActiveTask(task.id);
+        });
       } else {
         const response = await apiFetch("/api/chat", {
           method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
@@ -119,9 +154,13 @@ export default function App() {
           if (done) { parser.flush(); break; }
         }
       }
-      if (!gotError && (!gotDone || !gotMessage)) throw new Error("连接中断，回复未完成。请重试。");
+      if (!gotError && (!gotDone || !gotMessage)) {
+        failedTurn = true;
+        throw new Error("连接中断，回复未完成。请重试。");
+      }
       status = gotError ? "本轮未完成，请检查信息后重试" : "本轮已完成 · 点击引用查看来源";
     } catch (error) {
+      failedTurn = true;
       if (!controller.signal.aborted) {
         dispatch({ type: "event", event: {
           type: "error",
@@ -140,9 +179,22 @@ export default function App() {
         activeRequest.current = null;
         setActiveTask(null);
         dispatch({ type: "finish", status });
+        if (failedTurn) void settleRecovery(text, idempotencyKey, submittedTask);
         textarea.current?.focus();
       }
     }
+  }
+
+  async function referTask(taskId: string) {
+    const response = await apiFetch(`/api/v1/tasks/${taskId}/review`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ disposition: "needs_support" }),
+    });
+    if (!response.ok) {
+      setCancelMessage("人工协助标记未保存，请在任务记录里重试。");
+      return;
+    }
+    setRecovery(null);
+    setCancelMessage("已标记需要人工协助。系统只记录该标记，不会自动通知外部人员。");
   }
 
   async function stopTask() {
@@ -216,6 +268,12 @@ export default function App() {
           </div>
           <div className="composer-wrap">
             {conversationArchived && <p className="warning">此会话已归档，只能查看。请在会话列表恢复后重新打开，或新建会话。</p>}
+            {recovery && !session.busy && <div className="warning" role="status">
+              <p>{recovery.note}</p>
+              {recovery.mode === "reconnect" && <button type="button" onClick={() => void send(recovery.text, recovery.key)}>继续查看同一任务</button>}
+              {recovery.mode === "resubmit" && <button type="button" onClick={() => void send(recovery.text)}>重新提交</button>}
+              {recovery.mode === "hold" && recovery.taskId && <button type="button" onClick={() => void referTask(recovery.taskId!)}>标记需要人工协助</button>}
+            </div>}
             {activeTask && <button type="button" onClick={() => void stopTask()}>停止当前任务</button>}
             {cancelMessage && <p role="status">{cancelMessage}</p>}
             <label className="web-search-toggle">

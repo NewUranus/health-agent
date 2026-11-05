@@ -99,7 +99,9 @@ def test_access_requires_approval_and_history_revalidates_both_routes(secured):
     withdraw = proposal(client, doc, "withdraw")
     assert decide(client, withdraw).json()["result"]["withdrawn"] is True
     assert client.get(f'/api/admin/documents/{doc["id"]}', headers=ADMIN).json()["chunks"]
-    assert client.get("/api/admin/accounts").status_code == 401
+    # 上面已登录普通账号，会话还在；后台应拒绝该角色，而不是当成未登录。
+    denied = client.get("/api/admin/accounts")
+    assert denied.status_code == 403 and denied.json()["code"] == "ACCESS_DENIED"
     assert len(client.get("/api/admin/accounts", headers=ADMIN).json()["accounts"]) == 2
 
 

@@ -45,6 +45,7 @@ describe("后台角色页签", () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
       if (url.includes("/admin/operations")) return json(overview);
       if (url.includes("/admin/queue")) return json({ tasks: [] });
+      if (url.includes("/admin/support")) return json({ tasks: [] });
       if (url.includes("/admin/audit")) return json({ records: [] });
       throw new Error(url);
     }));

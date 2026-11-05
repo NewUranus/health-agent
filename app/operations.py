@@ -111,6 +111,30 @@ def attach_operations(router):
         await asyncio.to_thread(save)
         return {"id": task_id, "priority": body.priority}
 
+    @router.get("/admin/support", summary="查看需要人工协助的任务，不返回健康正文")
+    async def support_queue(request: Request):
+        database = require_database(request)
+        def read():
+            with database.connection() as execute:
+                rows = execute("SELECT t.id, t.status, t.error_code, t.request_id, t.created_at, r.reviewed_at, u.username FROM hp_task_reviews r JOIN hp_tasks t ON t.id = r.task_id JOIN hp_users u ON u.id = t.user_id WHERE r.disposition = 'needs_support' ORDER BY r.reviewed_at LIMIT 100").fetchall()
+            return [{"id": row["id"], "status": row["status"], "error_code": row["error_code"], "request_id": row["request_id"],
+                     "username": row["username"], "created_at": row["created_at"] // 1_000_000_000, "reviewed_at": row["reviewed_at"] // 1_000_000_000} for row in rows]
+        return {"tasks": await asyncio.to_thread(read)}
+
+    @router.post("/admin/support/{task_id}/resolve", summary="把人工协助标记为已处理，不读取健康正文")
+    async def resolve_support(request: Request, task_id: str):
+        database = require_database(request)
+        actor = request.state.user["id"] if getattr(request.state, "admin_auth", None) == "session" and request.state.user else "ops-admin"
+        def save():
+            with database.connection() as execute:
+                changed = execute("UPDATE hp_task_reviews SET disposition = 'resolved', reviewed_at = ?, request_id = ? WHERE task_id = ? AND disposition = 'needs_support'",
+                                  (time.time_ns(), request.state.request_id, task_id)).rowcount
+                if not changed:
+                    raise AuthFailure(404, "SUPPORT_NOT_FOUND", "没有待处理的人工协助标记。")
+                database._audit(execute, actor, "support.resolved", task_id, request.state.request_id, 200)
+        await asyncio.to_thread(save)
+        return {"id": task_id, "disposition": "resolved"}
+
     @router.get("/admin/audit", summary="按请求编号查询元数据审计")
     async def audit(request: Request, request_id: str = Query("", max_length=128), offset: int = Query(0, ge=0)):
         database = require_database(request)

@@ -151,6 +151,8 @@ def test_role_allows_admin_helper():
     assert role_allows_admin("knowledge_admin", "/admin/approvals")
     assert not role_allows_admin("knowledge_admin", "/admin/operations")
     assert role_allows_admin("ops_admin", "/admin/logs")
+    assert role_allows_admin("ops_admin", "/admin/support")
+    assert not role_allows_admin("knowledge_admin", "/admin/support")
     assert role_allows_admin("ops_admin", "/admin/queue")
     assert not role_allows_admin("ops_admin", "/admin/chunks")
     assert not role_allows_admin("user", "/admin/documents")
