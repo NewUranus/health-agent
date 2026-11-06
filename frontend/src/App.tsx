@@ -1,4 +1,5 @@
 import { useContext, useEffect, useReducer, useRef, useState } from "react";
+import { PasswordChange } from "./auth/PasswordChange";
 import { AuthContext } from "./auth/AuthGate";
 import { apiFetch, sessionExpired } from "./lib/api";
 import { HealthOverview } from "./components/HealthOverview";
@@ -237,6 +238,7 @@ export default function App() {
         <span className="mode">{mode}</span>
         <button type="button" className="quiet" disabled={session.busy} onClick={() => reset()}>新会话 <span aria-hidden="true">＋</span></button>
         {auth.user ? <><span className="account-name">{auth.user.username}</span>
+          <PasswordChange />
           <button type="button" className="quiet" disabled={auth.busy} onClick={auth.logout}>{auth.busy ? "正在退出…" : "退出登录"}</button></>
           : <button type="button" className="quiet" disabled={session.busy} onClick={() => reset(true)}>清除身份</button>}
       </div>

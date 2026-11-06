@@ -1193,6 +1193,7 @@ html {
 
 /* 登录页面沿用健康助手的浅色布局，窄屏保持单列。 */
 .auth-shell { min-height: 100dvh; display: grid; place-items: center; padding: 24px; }
+.password-backdrop { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 20px; background: #142f2bcc; }
 .auth-card { width: min(100%, 440px); background: #fff; border: 1px solid #dce6df; border-radius: 20px; padding: 32px; box-shadow: 0 12px 40px #234e3510; }
 .auth-card h1 { font-size: 26px; margin: 24px 0 12px; }
 .auth-card p { color: #62766b; line-height: 1.7; }

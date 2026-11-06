@@ -7,6 +7,7 @@ import { Operations } from "./Operations";
 import { KnowledgeArchive, TextImport } from "./KnowledgeArchive";
 import { KnowledgePolicy, ModelUsage } from "./Governance";
 import { AuthContext, type UserRole } from "../auth/AuthGate";
+import { PasswordChange } from "../auth/PasswordChange";
 
 const KNOWLEDGE_TABS = ["文档", "向量库", "检索测试", "确认记录", "模型用量", "版本档案", "文本导入"];
 const OPS_TABS = ["运行状态", "日志检索"];
@@ -143,7 +144,7 @@ export default function AdminApp() {
   return <main className="admin-shell">
     <header className="admin-header">
       <div><a href={roleSession ? "/admin" : "/"} className="admin-brand">HealthPilot</a><h1>{title}</h1><p>{subtitle}</p></div>
-      {roleSession && <div><span>{roleLabel}</span> <button onClick={() => auth.logout()} disabled={auth.busy}>退出登录</button></div>}
+      {roleSession && <div><span>{roleLabel}</span> <PasswordChange /> <button onClick={() => auth.logout()} disabled={auth.busy}>退出登录</button></div>}
       {!roleSession && access === "locked" && token && <button onClick={() => { storePassword(""); setToken(""); setPassword(""); setError(""); setDocuments([]); }}>退出登录</button>}
     </header>
     {error && <p role="alert" className="admin-error">{error}</p>}

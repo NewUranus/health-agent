@@ -33,6 +33,12 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+class PasswordChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=12, max_length=256)
+
+
 class UserInfo(BaseModel):
     id: str
     username: str
@@ -261,3 +267,14 @@ def attach_security(application, router, resource_path, version_headers):
         response.delete_cookie(COOKIE_NAME, path="/", httponly=True,
                                secure=os.getenv("HEALTH_AGENT_COOKIE_SECURE", "1") != "0", samesite="strict")
         return response
+
+    @router.post("/auth/password", summary="修改当前账号密码，并注销其他会话")
+    async def change_password(request: Request, body: PasswordChange):
+        if not application.state.auth_required:
+            raise AuthFailure(409, "AUTH_DEMO_MODE", "当前为免登录演示模式。")
+        if not request.state.user:
+            raise AuthFailure(401, "AUTH_REQUIRED", "请先登录。")
+        async with application.state.login_slots:
+            await asyncio.to_thread(application.state.auth_store.change_password, request.state.user["id"],
+                                    body.current_password, body.new_password, request.cookies.get(COOKIE_NAME), request.state.request_id)
+        return {"ok": True}

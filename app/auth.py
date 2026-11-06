@@ -245,6 +245,41 @@ class AuthStore:
             execute("DELETE FROM hp_sessions WHERE token_hash = ?", (digest(token or ""),))
             self._audit(execute, actor, "auth.logout", "/auth/logout", request_id, 200)
 
+    def _hit_limit(self, key, limit=8):
+        now = int(time.time())
+        with self.connection() as execute:
+            execute("DELETE FROM hp_login_limits WHERE until_at <= ?", (now,))
+            row = execute("INSERT INTO hp_login_limits VALUES (?, 1, ?) ON CONFLICT (key) DO UPDATE SET attempts = hp_login_limits.attempts + 1 RETURNING attempts",
+                          (digest(key), now + 900)).fetchone()
+        if row["attempts"] > limit:
+            raise AuthFailure(429, "AUTH_RATE_LIMITED", "密码尝试过多，请 15 分钟后再试。")
+
+    def change_password(self, user_id, current_password, new_password, token, request_id):
+        """校验当前密码后更换，并注销除本次会话以外的登录。审计不记录密码。"""
+        if not 12 <= len(new_password) <= 256:
+            raise AuthFailure(422, "PASSWORD_INVALID", "新密码须为 12–256 个字符。")
+        if current_password == new_password:
+            raise AuthFailure(422, "PASSWORD_UNCHANGED", "新密码不能与当前密码相同。")
+        with self.connection() as execute:
+            user = execute("SELECT password_hash FROM hp_users WHERE id = ?", (user_id,)).fetchone()
+        if not user:
+            raise AuthFailure(401, "AUTH_REQUIRED", "请先登录。")
+        stored = user["password_hash"]
+        matched = hmac.compare_digest(password_hash(current_password, stored.split("$")[1]), stored)
+        if not matched:
+            self._hit_limit("password-change:" + user_id)
+            raise AuthFailure(401, "AUTH_INVALID_CREDENTIALS", "当前密码不正确。")
+        hashed = password_hash(new_password)
+        with self.connection() as execute:
+            sql = "SELECT password_hash FROM hp_users WHERE id = ?" + (" FOR UPDATE" if self.url else "")
+            current = execute(sql, (user_id,)).fetchone()
+            if not current or current["password_hash"] != stored:
+                raise AuthFailure(401, "AUTH_INVALID_CREDENTIALS", "当前密码不正确。")
+            execute("UPDATE hp_users SET password_hash = ? WHERE id = ?", (hashed, user_id))
+            execute("DELETE FROM hp_sessions WHERE user_id = ? AND token_hash != ?", (user_id, digest(token or "")))
+            execute("DELETE FROM hp_login_limits WHERE key = ?", (digest("password-change:" + user_id),))
+            self._audit(execute, user_id, "user.password_changed", user_id, request_id, 200)
+
     def claim_thread(self, thread_id, user_id):
         key = digest(thread_id)
         with self.connection() as execute:

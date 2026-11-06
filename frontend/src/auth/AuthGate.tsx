@@ -180,6 +180,6 @@ export function AuthGate({ children, adminPath = false }: { children: ReactNode;
         <input id="login-password" type="password" autoComplete="current-password" maxLength={256} required value={password} onChange={e => setPassword(e.target.value)} disabled={busy} />
         <button type="submit" disabled={busy}>{busy ? "正在登录…" : "登录"}</button>
       </form>}
-    <p className="auth-note">技术演示，不构成医疗建议。账号开通或密码重置请联系管理员。</p>
+    <p className="auth-note">技术演示，不构成医疗建议。账号由管理员开通；登录后可自行修改密码。</p>
   </section></main>;
 }
