@@ -13,8 +13,10 @@ from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 from app.graph import OWNERS, build_graph
+from app.http_security import auth_required
 from app.llm import make_embedder, make_llm
 from app.mcp_client import MCPClient
+from app.result_cache import ResultCache
 from app.memory import memory_backend
 from app.rag import Retriever
 from app.knowledge import MemoryKnowledgeBase, PgKnowledgeBase
@@ -63,6 +65,11 @@ class HealthAgent:
                 self.kb = PgKnowledgeBase(url, make_embedder(self.mock)) if url else MemoryKnowledgeBase(make_embedder(self.mock))
             self.stack.push_async_callback(self.kb.close)
             await self.kb.setup()
+            if auth_required(self.mock):
+                results = ResultCache()
+                await asyncio.to_thread(results.setup)
+                self.mcp.results = results
+                self.kb.results = results
             builtin = await asyncio.to_thread(Retriever.from_dir, ROOT / "corpus")
             await self.kb.seed_builtin(builtin.chunks)
             self.graph = build_graph(self.mcp, self.store, self.kb, make_llm(self.mock), self.mock, self.checkpointer)

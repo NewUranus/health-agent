@@ -17,6 +17,7 @@ from uuid import uuid4
 from rank_bm25 import BM25Okapi
 
 from app.rag import tokenize
+from app.result_cache import embedder_model, vector_key
 from app.knowledge_access import KnowledgeChunk, allowed, sql_access, evidence_key, references_valid, evidence_refs, merge_evidence
 from app.terms import expand_query
 
@@ -88,6 +89,7 @@ class KnowledgeBase:
         self._query_vectors = OrderedDict()
         self._query_tasks = {}
         self._query_embedder = embedder
+        self.results = None
 
     async def create_draft(self, title, source, version, chunks, filename):
         documents = await self.create_drafts([{
@@ -105,6 +107,35 @@ class KnowledgeBase:
             for variant, chunks in [('raw', raw_chunks), ('clean', clean_chunks)]
         ])
 
+    async def _count_vector(self, hit):
+        if self.results is None or self.embedder is None:
+            return
+        try:
+            await asyncio.to_thread(self.results.record, "vector", hit)
+        except Exception as exc:
+            emit("cache.unavailable", kind="vector", error_type=type(exc).__name__)
+
+    async def _resolve_query_vector(self, query):
+        """只缓存成功的查询向量，检索结果始终读取当前已发布内容。"""
+        if self.results is not None and self.embedder is not None:
+            key = vector_key(embedder_model(self.embedder), query)
+            try:
+                found = await asyncio.to_thread(self.results.read, "vector", key)
+            except Exception as exc:
+                emit("cache.unavailable", kind="vector", error_type=type(exc).__name__)
+                found = None
+            if found is not None:
+                await self._count_vector(True)
+                return found
+        vector = (await self.embed([query]))[0]
+        if self.results is not None and self.embedder is not None and vector is not None:
+            try:
+                await asyncio.to_thread(self.results.write, "vector", vector_key(embedder_model(self.embedder), query), vector)
+            except Exception as exc:
+                emit("cache.unavailable", kind="vector", error_type=type(exc).__name__)
+            await self._count_vector(False)
+        return vector
+
     async def query_vector(self, query):
         """只缓存成功的查询向量，检索结果始终读取当前已发布内容。"""
         if self._query_embedder is not self.embedder:
@@ -113,27 +144,33 @@ class KnowledgeBase:
             self._query_embedder = self.embedder
         if query in self._query_vectors:
             self._query_vectors.move_to_end(query)
+            await self._count_vector(True)
             return list(self._query_vectors[query])
         task = self._query_tasks.get(query)
-        if task is None:
-            task = asyncio.create_task(self.embed([query]))
+        leader = task is None
+        if leader:
+            task = asyncio.create_task(self._resolve_query_vector(query))
             self._query_tasks[query] = task
 
-            def completed(done):
+            def completed(done, current=task):
                 # 被替换的模型任务不能污染新模型的缓存；失败留给下次重试。
-                current = self._query_tasks.get(query) is done
-                if current:
+                if self._query_tasks.get(query) is current:
                     self._query_tasks.pop(query, None)
-                if done.cancelled() or done.exception() is not None:
+                if done.cancelled() or done.exception() is not None or self._query_embedder is not self.embedder:
                     return
-                if current:
-                    self._query_vectors[query] = tuple(done.result()[0])
-                    if len(self._query_vectors) > 256:
-                        self._query_vectors.popitem(last=False)
+                vector = done.result()
+                if vector is None:
+                    return
+                self._query_vectors[query] = tuple(vector)
+                if len(self._query_vectors) > 256:
+                    self._query_vectors.popitem(last=False)
 
             task.add_done_callback(completed)
         # 某个请求取消时，不取消其他请求仍在等待的向量计算。
-        return list((await asyncio.shield(task))[0])
+        vector = await asyncio.shield(task)
+        if not leader:
+            await self._count_vector(True)
+        return list(vector) if vector is not None else None
 
     async def embed(self, texts):
         if self.embedder is None:

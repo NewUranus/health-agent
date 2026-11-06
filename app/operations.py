@@ -8,6 +8,7 @@ from fastapi import Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 from app.auth import AuthFailure
+from app.result_cache import cache_snapshot
 from app.telemetry import status as log_status
 
 
@@ -28,6 +29,7 @@ def snapshot(database):
         paused = execute("SELECT value FROM hp_system_settings WHERE name = 'admission_paused'").fetchone()
         reviews = execute("SELECT COUNT(*) AS count FROM hp_task_reviews WHERE disposition = 'needs_support'").fetchone()["count"]
         costs = execute("SELECT SUM(c.cost_microusd) AS cost_microusd, COUNT(*) AS priced_calls FROM hp_model_costs c JOIN hp_model_usage u ON u.id = c.usage_id WHERE u.at >= ?", (current - 86400,)).fetchone()
+        cache = cache_snapshot(execute)
     counts = {row["status"]: row["count"] for row in rows}
     oldest = next((max(0, current - row["oldest"] // 1000000000) for row in rows if row["status"] == "pending"), 0)
     alerts = []
@@ -41,7 +43,7 @@ def snapshot(database):
         "workers": [dict(row) for row in workers], "oldest_pending_seconds": oldest, "stale_tasks": stale,
         "completed_24h": recent["completed"], "average_completion_seconds_24h": float(recent["average_ns"] or 0) / 1000000000,
         "failures_24h": [dict(row) for row in failures], "needs_support": reviews,
-        "admission_paused": bool(paused and paused["value"] == "1"), "costs_24h": dict(costs), "alerts": alerts}
+        "admission_paused": bool(paused and paused["value"] == "1"), "costs_24h": dict(costs), "cache": cache, "alerts": alerts}
 
 
 class AdmissionUpdate(BaseModel):
@@ -151,6 +153,9 @@ def attach_operations(router):
             lines.append(f'healthpilot_tasks{{status={json.dumps(status)}}} {count}')
         for name, value in {"workers": len(data["workers"]), "queue_oldest_seconds": data["oldest_pending_seconds"], "stale_tasks": data["stale_tasks"], "admission_paused": int(data["admission_paused"])}.items():
             lines.extend([f"# TYPE healthpilot_{name} gauge", f"healthpilot_{name} {value}"])
+        for kind, counts in data["cache"].items():
+            for name, value in counts.items():
+                lines.append(f'healthpilot_cache_{name}{{kind="{kind}"}} {value}')
         logs = await asyncio.to_thread(log_status)
         for signal in ("traces", "logs"):
             state = logs.get("signals", {}).get(signal, {})

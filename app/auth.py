@@ -14,6 +14,7 @@ import uuid
 
 from dotenv import load_dotenv
 from app.database import schema_lock_sync
+from app.result_cache import ensure_schema
 
 ROOT = Path(__file__).resolve().parent.parent
 COOKIE_NAME = "healthpilot_session"
@@ -123,6 +124,7 @@ class AuthStore:
             ):
                 execute(statement)
             self._ensure_role_column(execute)
+            ensure_schema(execute)
 
     def _ensure_role_column(self, execute):
         if self.url:
