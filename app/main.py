@@ -24,7 +24,10 @@ from app.ingest import IngestError, chunk_pages, clean_pages, parse_pdf
 from app.knowledge import KnowledgeError
 from app.auth import AuthFailure, AuthStore, COOKIE_NAME
 from app.approvals import ApprovalStore, attach_approval_api
-from app.http_security import attach_security, auth_required, current_identity, error_response, ErrorInfo
+from app.http_security import (
+    AccountCreate, AccountPasswordReset, AccountRoleUpdate, attach_security, auth_required,
+    current_identity, error_response, ErrorInfo,
+)
 from app.tasks import TaskRunner, TaskStore
 from app.idempotency import idempotent, payload_hash
 from app.task_api import attach_task_api, relay_task_events
@@ -242,14 +245,65 @@ def create_app():
     async def documents():
         return {"documents": await application.state.agent.kb.list_documents()}
 
-    @api_v1.get("/admin/accounts", summary="查看可用于知识授权的账号标识")
+    def account_actor(request):
+        if not required or request.state.admin_auth not in {"session", "bearer"}:
+            raise AuthFailure(409, "AUTH_DEMO_MODE", "当前为免登录演示模式，不能在页面上管理账号。")
+        if request.state.admin_auth == "session":
+            return request.state.user["id"]
+        return "knowledge-admin"
+
+    def account_failure(exc):
+        message = str(exc)
+        if message == "账号已存在。":
+            raise AuthFailure(409, "ACCOUNT_EXISTS", message) from None
+        if message == "账号不存在。":
+            raise AuthFailure(404, "ACCOUNT_NOT_FOUND", message) from None
+        raise AuthFailure(422, "ACCOUNT_INVALID", message) from None
+
+    @api_v1.get("/admin/accounts", summary="查看账号标识与角色，不含密码")
     async def knowledge_accounts():
         if not required:
             return {"accounts": []}
         def read():
             with application.state.auth_store.connection() as execute:
-                return [dict(row) for row in execute("SELECT id, username FROM hp_users ORDER BY username LIMIT 500").fetchall()]
+                rows = execute("SELECT id, username, role, created_at FROM hp_users ORDER BY username LIMIT 500").fetchall()
+            return [{"id": row["id"], "username": row["username"],
+                     "role": row["role"] if row["role"] in {"user", "knowledge_admin", "ops_admin"} else "user",
+                     "created_at": row["created_at"]} for row in rows]
         return {"accounts": await asyncio.to_thread(read)}
+
+    @api_v1.post("/admin/accounts", status_code=201, summary="由管理员创建账号")
+    async def create_account(request: Request, body: AccountCreate):
+        actor = account_actor(request)
+        async with application.state.login_slots:
+            try:
+                return await asyncio.to_thread(
+                    application.state.auth_store.provision, body.username, body.password,
+                    role=body.role, actor=actor, request_id=request.state.request_id)
+            except ValueError as exc:
+                account_failure(exc)
+
+    @api_v1.post("/admin/accounts/{username}/password", summary="重置指定账号密码并注销其全部会话")
+    async def reset_account_password(request: Request, username: str, body: AccountPasswordReset):
+        actor = account_actor(request)
+        async with application.state.login_slots:
+            try:
+                await asyncio.to_thread(
+                    application.state.auth_store.provision, username, body.password, reset=True,
+                    actor=actor, request_id=request.state.request_id)
+            except ValueError as exc:
+                account_failure(exc)
+        return {"ok": True}
+
+    @api_v1.patch("/admin/accounts/{username}/role", summary="更改账号角色；角色变化时注销其全部会话")
+    async def update_account_role(request: Request, username: str, body: AccountRoleUpdate):
+        actor = account_actor(request)
+        try:
+            return await asyncio.to_thread(
+                application.state.auth_store.assign_role, username, body.role,
+                actor=actor, request_id=request.state.request_id)
+        except ValueError as exc:
+            account_failure(exc)
 
     @api_v1.get("/admin/model-usage", summary="查看最近七天模型调用用量，不含提示正文")
     async def model_usage():

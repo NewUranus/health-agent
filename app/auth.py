@@ -22,9 +22,10 @@ ROLES = frozenset({"user", "knowledge_admin", "ops_admin"})
 ADMIN_ROLES = frozenset({"knowledge_admin", "ops_admin"})
 _KNOWLEDGE_ADMIN = frozenset({
     "documents", "document-pairs", "approvals", "knowledge-archives", "text-documents",
-    "chunks", "search", "compare", "stats", "accounts", "model-usage",
+    "chunks", "search", "compare", "stats", "model-usage",
 })
 _OPS_ADMIN = frozenset({"operations", "queue", "admission", "audit", "metrics", "logs", "traces", "support"})
+_SHARED_ADMIN = frozenset({"accounts"})
 
 
 class AuthFailure(Exception):
@@ -58,6 +59,8 @@ def admin_scope(resource):
     name = resource[len("/admin"):].strip("/").split("/", 1)[0]
     if not name:
         return None
+    if name in _SHARED_ADMIN:
+        return "shared"
     if name in _KNOWLEDGE_ADMIN:
         return "knowledge"
     if name in _OPS_ADMIN:
@@ -69,6 +72,8 @@ def role_allows_admin(role, resource):
     scope = admin_scope(resource)
     if scope is None or role not in ADMIN_ROLES:
         return False
+    if scope == "shared":
+        return True
     return (role == "knowledge_admin" and scope == "knowledge") or (role == "ops_admin" and scope == "ops")
 
 
@@ -136,7 +141,7 @@ class AuthStore:
         with self.connection() as execute:
             self._audit(execute, actor, action, resource, request_id, status)
 
-    def provision(self, username, password, *, reset=False, role=None):
+    def provision(self, username, password, *, reset=False, role=None, actor="local-operator", request_id=None):
         username = username.strip().lower()
         if not valid_username(username):
             raise ValueError("账号须为 3–64 位英文字母、数字、点、横线或下划线，并以字母或数字开头。")
@@ -147,28 +152,34 @@ class AuthStore:
         if role is not None and not valid_role(role):
             raise ValueError("角色须为 user、knowledge_admin 或 ops_admin。")
         hashed = password_hash(password)
+        request_id = request_id or uuid.uuid4().hex
         with self.connection() as execute:
             user = execute("SELECT id, role FROM hp_users WHERE username = ?", (username,)).fetchone()
             if bool(user) != reset:
                 raise ValueError("账号不存在。" if reset else "账号已存在。")
             user_id = user["id"] if user else uuid.uuid4().hex
             previous = user["role"] if user and user["role"] in ROLES else "user"
-            if reset:
-                if role is None:
-                    execute("UPDATE hp_users SET password_hash = ? WHERE id = ?", (hashed, user_id))
-                    role = previous
+            try:
+                if reset:
+                    if role is None:
+                        execute("UPDATE hp_users SET password_hash = ? WHERE id = ?", (hashed, user_id))
+                        role = previous
+                    else:
+                        execute("UPDATE hp_users SET password_hash = ?, role = ? WHERE id = ?", (hashed, role, user_id))
+                    execute("DELETE FROM hp_sessions WHERE user_id = ?", (user_id,))
                 else:
-                    execute("UPDATE hp_users SET password_hash = ?, role = ? WHERE id = ?", (hashed, role, user_id))
-                execute("DELETE FROM hp_sessions WHERE user_id = ?", (user_id,))
-            else:
-                execute("INSERT INTO hp_users (id, username, password_hash, created_at, role) VALUES (?, ?, ?, ?, ?)",
-                        (user_id, username, hashed, int(time.time()), role))
-            self._audit(execute, "local-operator", "user.password_reset" if reset else "user.created", user_id, uuid.uuid4().hex, 200)
+                    execute("INSERT INTO hp_users (id, username, password_hash, created_at, role) VALUES (?, ?, ?, ?, ?)",
+                            (user_id, username, hashed, int(time.time()), role))
+            except Exception as exc:
+                if type(exc).__name__ in {"IntegrityError", "UniqueViolation"}:
+                    raise ValueError("账号已存在。") from None
+                raise
+            self._audit(execute, actor, "user.password_reset" if reset else "user.created", user_id, request_id, 200)
             if reset and role != previous:
-                self._audit(execute, "local-operator", f"user.role_changed:{previous}:{role}", user_id, uuid.uuid4().hex, 200)
+                self._audit(execute, actor, f"user.role_changed:{previous}:{role}", user_id, request_id, 200)
         return {"id": user_id, "username": username, "role": role}
 
-    def assign_role(self, username, role):
+    def assign_role(self, username, role, *, actor="local-operator", request_id=None):
         """更改角色并注销该账号全部会话。角色未变时不写审计。"""
         username = username.strip().lower()
         if not valid_role(role):
@@ -182,7 +193,7 @@ class AuthStore:
                 return {"id": user["id"], "username": username, "role": role, "changed": False}
             execute("UPDATE hp_users SET role = ? WHERE id = ?", (role, user["id"]))
             execute("DELETE FROM hp_sessions WHERE user_id = ?", (user["id"],))
-            self._audit(execute, "local-operator", f"user.role_changed:{previous}:{role}", user["id"], uuid.uuid4().hex, 200)
+            self._audit(execute, actor, f"user.role_changed:{previous}:{role}", user["id"], request_id or uuid.uuid4().hex, 200)
         return {"id": user["id"], "username": username, "role": role, "changed": True}
 
     def current_role(self, user_id):

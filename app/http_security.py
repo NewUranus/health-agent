@@ -39,6 +39,23 @@ class PasswordChange(BaseModel):
     new_password: str = Field(min_length=12, max_length=256)
 
 
+class AccountCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=12, max_length=256)
+    role: RoleName = "user"
+
+
+class AccountPasswordReset(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    password: str = Field(min_length=12, max_length=256)
+
+
+class AccountRoleUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: RoleName
+
+
 class UserInfo(BaseModel):
     id: str
     username: str

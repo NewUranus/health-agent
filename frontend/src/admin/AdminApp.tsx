@@ -8,10 +8,11 @@ import { KnowledgeArchive, TextImport } from "./KnowledgeArchive";
 import { KnowledgePolicy, ModelUsage } from "./Governance";
 import { AuthContext, type UserRole } from "../auth/AuthGate";
 import { PasswordChange } from "../auth/PasswordChange";
+import { AccountAdmin } from "./AccountAdmin";
 
-const KNOWLEDGE_TABS = ["文档", "向量库", "检索测试", "确认记录", "模型用量", "版本档案", "文本导入"];
-const OPS_TABS = ["运行状态", "日志检索"];
-const ALL_TABS = [...KNOWLEDGE_TABS, ...OPS_TABS];
+const KNOWLEDGE_TABS = ["文档", "向量库", "检索测试", "确认记录", "模型用量", "版本档案", "文本导入", "账号"];
+const OPS_TABS = ["运行状态", "日志检索", "账号"];
+const ALL_TABS = [...KNOWLEDGE_TABS, ...OPS_TABS.filter(name => name !== "账号")];
 
 function tabsForRole(role: UserRole | null | undefined) {
   if (role === "knowledge_admin") return KNOWLEDGE_TABS;
@@ -169,6 +170,7 @@ export default function AdminApp() {
         {tab === "文本导入" && <TextImport api={api} onChanged={refresh} />}
         {tab === "日志检索" && <LogExplorer api={api} />}
         {tab === "运行状态" && <Operations api={api} />}
+        {tab === "账号" && <AccountAdmin api={api} />}
       </section>
     </>}
   </main>;
