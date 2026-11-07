@@ -11,7 +11,7 @@ class Prompt:
 
 
 def load_prompt(name: str) -> Prompt:
-    if name not in {"advise", "answer", "extract", "intent"}:
+    if name not in {"advise", "answer", "extract", "intent", "triage"}:
         raise ValueError("未知提示词")
     raw = Path(__file__).with_name(name + ".md").read_text(encoding="utf-8")
     header, text = raw.split("\n", 1)

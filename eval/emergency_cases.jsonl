@@ -1,0 +1,100 @@
+{"text": "心口像被石头压住，喘气都费劲", "expect": true, "category": "chest_pain", "tag": "metaphor"}
+{"text": "胸口闷得像有块大石头，出了一身冷汗", "expect": true, "category": "chest_pain", "tag": "metaphor"}
+{"text": "胸口一阵阵发紧，左边胳膊也跟着疼", "expect": true, "category": "chest_pain", "tag": "colloquial"}
+{"text": "心窝子那里绞着疼，已经半个钟头了", "expect": true, "category": "chest_pain", "tag": "colloquial"}
+{"text": "胸前像被人用手攥住一样，疼得直不起腰", "expect": true, "category": "chest_pain", "tag": "metaphor"}
+{"text": "心口窝疼得厉害，还往下巴那里窜", "expect": true, "category": "chest_pain", "tag": "colloquial"}
+{"text": "胸口好像有个铁箍勒着，越来越紧", "expect": true, "category": "chest_pain", "tag": "metaphor"}
+{"text": "胸口痛的要命，动都不敢动", "expect": true, "category": "chest_pain", "tag": "colloquial"}
+{"text": "不是胸痛，是胸口压得慌，透不过气", "expect": true, "category": "chest_pain", "tag": "negation_mix"}
+{"text": "胸闷得厉害，感觉心脏要停了", "expect": true, "category": "chest_pain", "tag": "colloquial"}
+{"text": "兄口疼得受不了，一直冒冷汗", "expect": true, "category": "chest_pain", "tag": "typo"}
+{"text": "心口特别痛，还想吐，浑身冒汗", "expect": true, "category": "chest_pain", "tag": "colloquial"}
+{"text": "上不来气，躺下更难受，只能坐着", "expect": true, "category": "breathing", "tag": "colloquial"}
+{"text": "憋得慌，嘴唇都发紫了", "expect": true, "category": "breathing", "tag": "colloquial"}
+{"text": "喘气像拉风箱一样，话都说不完整", "expect": true, "category": "breathing", "tag": "metaphor"}
+{"text": "呼吸好困难啊，一口气接不上来", "expect": true, "category": "breathing", "tag": "colloquial"}
+{"text": "突然透不过气，胸口发紧", "expect": true, "category": "breathing", "tag": "colloquial"}
+{"text": "我爸一下子喘不过来气了", "expect": true, "category": "breathing", "tag": "third_person"}
+{"text": "夜里憋醒好几次，现在坐着也喘不动", "expect": true, "category": "breathing", "tag": "colloquial"}
+{"text": "气短得厉害，走两步就要停下来大口喘", "expect": true, "category": "breathing", "tag": "colloquial"}
+{"text": "我妈刚才吃饭筷子突然拿不住了，右手没劲", "expect": true, "category": "stroke", "tag": "third_person"}
+{"text": "老伴说话突然大舌头，含含糊糊听不清", "expect": true, "category": "stroke", "tag": "third_person"}
+{"text": "早上起来半边脸木木的，嘴角往一边歪", "expect": true, "category": "stroke", "tag": "colloquial"}
+{"text": "突然一只眼睛看不见东西了", "expect": true, "category": "stroke", "tag": "colloquial"}
+{"text": "头突然像炸开一样疼，这辈子没这么疼过", "expect": true, "category": "stroke", "tag": "metaphor"}
+{"text": "左边胳膊腿突然不听使唤了", "expect": true, "category": "stroke", "tag": "colloquial"}
+{"text": "说话说着说着就词不达意，舌头不灵活", "expect": true, "category": "stroke", "tag": "colloquial"}
+{"text": "我爷爷突然走路往一边倒，手也抬不起来", "expect": true, "category": "stroke", "tag": "third_person"}
+{"text": "脸一边耷拉下来了，喝水往外漏", "expect": true, "category": "stroke", "tag": "colloquial"}
+{"text": "突然看东西重影，头晕得站不稳", "expect": true, "category": "stroke", "tag": "colloquial"}
+{"text": "我爸刚才突然倒在地上，叫他也不答应", "expect": true, "category": "syncope", "tag": "third_person"}
+{"text": "人一下子就软了，叫不醒", "expect": true, "category": "syncope", "tag": "third_person"}
+{"text": "刚才眼前一黑就栽倒了，醒来不知道过了多久", "expect": true, "category": "syncope", "tag": "colloquial"}
+{"text": "奶奶突然抽搐，口吐白沫", "expect": true, "category": "syncope", "tag": "third_person"}
+{"text": "老公迷迷糊糊的，问什么都答不上来", "expect": true, "category": "syncope", "tag": "third_person"}
+{"text": "刚刚突然晕过去了一下", "expect": true, "category": "syncope", "tag": "colloquial"}
+{"text": "孩子他爸突然没反应了，脸色发白", "expect": true, "category": "syncope", "tag": "third_person"}
+{"text": "活着太累了，想一了百了", "expect": true, "category": "self_harm", "tag": "colloquial"}
+{"text": "不想再拖累家里了，想结束这一切", "expect": true, "category": "self_harm", "tag": "colloquial"}
+{"text": "我真的撑不下去了，想去死", "expect": true, "category": "self_harm", "tag": "colloquial"}
+{"text": "药都攒好了，打算今晚全吃了", "expect": true, "category": "self_harm", "tag": "colloquial"}
+{"text": "觉得活着没意思，想从楼上跳下去", "expect": true, "category": "self_harm", "tag": "colloquial"}
+{"text": "不想活了", "expect": true, "category": "self_harm", "tag": "rule"}
+{"text": "血压量出来220/130，头疼得要裂开", "expect": true, "category": "other", "tag": "colloquial"}
+{"text": "血压突然飙到200多，眼睛看东西模糊", "expect": true, "category": "other", "tag": "colloquial"}
+{"text": "心跳快得像要蹦出来，人快晕了", "expect": true, "category": "other", "tag": "metaphor"}
+{"text": "心慌得厉害，一摸脉搏乱跳，站都站不住", "expect": true, "category": "other", "tag": "colloquial"}
+{"text": "心口窝子疼得慌，冒虚汗", "expect": true, "category": "chest_pain", "tag": "dialect"}
+{"text": "胸口翳住，抖唔到气", "expect": true, "category": "breathing", "tag": "dialect"}
+{"text": "我阿爸头晕晕，讲话讲唔清楚，手冇力", "expect": true, "category": "stroke", "tag": "dialect"}
+{"text": "心头闷得紧，气都喘不匀", "expect": true, "category": "breathing", "tag": "dialect"}
+{"text": "俺娘嘴歪了，说话也不利索", "expect": true, "category": "stroke", "tag": "dialect"}
+{"text": "胸口好闷，呼xi困难", "expect": true, "category": "breathing", "tag": "typo"}
+{"text": "心脏好像被揪住了，痛的说不出话", "expect": true, "category": "chest_pain", "tag": "metaphor"}
+{"text": "半边身子麻了，动不了", "expect": true, "category": "stroke", "tag": "typo"}
+{"text": "刚刚昏过去了", "expect": true, "category": "syncope", "tag": "colloquial"}
+{"text": "没有发烧，就是胸口压得透不过气", "expect": true, "category": "breathing", "tag": "negation_mix"}
+{"text": "头不疼，但是右手突然抬不起来了", "expect": true, "category": "stroke", "tag": "negation_mix"}
+{"text": "不是胃疼，是心口往后背窜着疼", "expect": true, "category": "chest_pain", "tag": "negation_mix"}
+{"text": "没摔倒，但刚才突然什么都想不起来，说话乱七八糟", "expect": true, "category": "stroke", "tag": "negation_mix"}
+{"text": "我同事在办公室捂着胸口坐地上了，脸色发青", "expect": true, "category": "chest_pain", "tag": "third_person"}
+{"text": "邻居大爷说胸口疼得厉害，满头大汗", "expect": true, "category": "chest_pain", "tag": "third_person"}
+{"text": "我老婆突然说不出话，右边手脚都没力气了", "expect": true, "category": "stroke", "tag": "third_person"}
+{"text": "爸爸半夜憋得坐起来，咳粉红色泡沫痰", "expect": true, "category": "breathing", "tag": "third_person"}
+{"text": "体检说有胸腔积液的风险吗", "expect": false, "tag": "knowledge"}
+{"text": "胸痛一般是什么原因引起的？", "expect": false, "tag": "knowledge"}
+{"text": "去年心梗做了支架，现在恢复得挺好，想问饮食注意什么", "expect": false, "tag": "history"}
+{"text": "没有胸痛，也没有呼吸困难，就是想问问血压怎么控制", "expect": false, "tag": "denial"}
+{"text": "中风的早期表现有哪些？", "expect": false, "tag": "knowledge"}
+{"text": "我爸前年中风过，现在能正常走路，降压药该怎么吃", "expect": false, "tag": "history"}
+{"text": "跑完步有点喘，休息几分钟就好了", "expect": false, "tag": "mild"}
+{"text": "晚上睡觉打呼噜，会不会影响心脏", "expect": false, "tag": "knowledge"}
+{"text": "偶尔蹲久了站起来眼前发黑，一下就好了", "expect": false, "tag": "mild"}
+{"text": "低压一直偏高，95左右，需要吃药吗", "expect": false, "tag": "data"}
+{"text": "心电图报告写着窦性心律不齐，严重吗", "expect": false, "tag": "knowledge"}
+{"text": "我想戒烟，但总是忍不住", "expect": false, "tag": "lifestyle"}
+{"text": "最近工作压力大，睡不好", "expect": false, "tag": "lifestyle"}
+{"text": "血压140/90，男，55岁，胆固醇5.5", "expect": false, "tag": "data"}
+{"text": "吃了降压药以后脚踝有点肿", "expect": false, "tag": "mild"}
+{"text": "我能不能喝点红酒？", "expect": false, "tag": "lifestyle"}
+{"text": "呼吸困难的人应该怎么急救？", "expect": false, "tag": "knowledge"}
+{"text": "晕倒了应该先做什么，想提前学习一下", "expect": false, "tag": "knowledge"}
+{"text": "天气冷手脚发麻，是血液循环不好吗", "expect": false, "tag": "mild"}
+{"text": "胸口长了个小痘痘，有点疼", "expect": false, "tag": "mild"}
+{"text": "我妈总说累得要死，其实就是带孙子辛苦", "expect": false, "tag": "hyperbole"}
+{"text": "这个电视剧笑死我了，我们看完再测血压", "expect": false, "tag": "hyperbole"}
+{"text": "气死我了，降压药又涨价了", "expect": false, "tag": "hyperbole"}
+{"text": "前几天感冒有点咳嗽，现在好多了", "expect": false, "tag": "mild"}
+{"text": "心率每分钟68次，正常吗", "expect": false, "tag": "data"}
+{"text": "他汀会不会伤肝？", "expect": false, "tag": "knowledge"}
+{"text": "家里老人有冠心病，平时要备什么药", "expect": false, "tag": "knowledge"}
+{"text": "上楼梯到三楼会有点气短，好几年都这样了", "expect": false, "tag": "mild"}
+{"text": "头有点胀，量了血压145/92", "expect": false, "tag": "data"}
+{"text": "我已经戒烟一年了，风险会降多少", "expect": false, "tag": "lifestyle"}
+{"text": "偶尔心慌一下，几秒钟就过去了，去医院查过没事", "expect": false, "tag": "history"}
+{"text": "胃有点烧，吃了饭就好了", "expect": false, "tag": "mild"}
+{"text": "如果胆固醇降到4.5，风险能降多少", "expect": false, "tag": "data"}
+{"text": "胸痛中心是干什么的", "expect": false, "tag": "knowledge"}
+{"text": "怎么判断是不是中风，想给爸妈科普", "expect": false, "tag": "knowledge"}
+{"text": "睡觉压到胳膊，醒来麻了一会儿就好了", "expect": false, "tag": "mild"}

@@ -1,5 +1,5 @@
 import { useEffect, useRef, type CSSProperties } from "react";
-import type { NodeEvent, TraceTurn } from "../types";
+import type { NodeData, NodeEvent, TraceTurn } from "../types";
 import { adherenceLabels, agents, fieldNames, nodeLabels } from "../lib/labels";
 
 function safeUrl(value?: string): string | undefined {
@@ -7,6 +7,17 @@ function safeUrl(value?: string): string | undefined {
     const url = new URL(value ?? "");
     return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password ? url.href : undefined;
   } catch { return undefined; }
+}
+
+function safetySummary(data: NodeData): string {
+  if (data.red_flags?.length) {
+    return data.source === "model" && data.evidence
+      ? `模型识别出急症信号：「${data.evidence}」，立即进入紧急指引。`
+      : "发现急症信号，立即进入紧急指引。";
+  }
+  if (data.classifier_failed) return "未命中急症关键词；模型分诊未完成，已按规则结果继续。";
+  if (data.classifier === "ok") return "规则与模型均未发现急症信号，继续问诊。";
+  return "未命中急症关键词，继续问诊。";
 }
 
 function TraceCard({ event, turn, highlighted }: { event: NodeEvent; turn: number; highlighted: string | null }) {
@@ -20,8 +31,8 @@ function TraceCard({ event, turn, highlighted }: { event: NodeEvent; turn: numbe
         <p>{data.missing?.length ? `还需补充：${fieldNames(data.missing)}` : "必填资料已齐全"}</p>
         {!!data.from_memory?.length && <p className="success">来自长期记忆：{fieldNames(data.from_memory)}</p>}
       </>}
-      {event.node === "safety_check" && <p className={data.red_flags?.length ? "warning" : "success"}>
-        {data.red_flags?.length ? "发现急症信号，立即进入紧急指引。" : "未命中急症关键词，继续问诊。"}
+      {event.node === "safety_check" && <p className={data.red_flags?.length || data.classifier_failed ? "warning" : "success"}>
+        {safetySummary(data)}
       </p>}
       {event.node === "supervisor" && <p>{agents[data.route ?? ""]?.[0] ?? data.route} · {data.reason}</p>}
       {event.node === "verify" && <p className={data.ok ? "success" : "warning"}>
@@ -60,7 +71,7 @@ function TraceCard({ event, turn, highlighted }: { event: NodeEvent; turn: numbe
       </div>)}
       {event.node === "checkin_question" && <p>第 {data.step}/{data.total} 题</p>}
       {event.node === "checkin" && <>
-        {!!data.red_flags?.length && <p className="warning">发现急症信号，随访已中止。</p>}
+        {!!data.red_flags?.length && <p className="warning">发现急症信号，随访已中止。{data.source === "model" && data.evidence ? `模型依据：「${data.evidence}」` : ""}</p>}
         {data.cancelled && <p>已取消本次随访，记录没有变化。</p>}
         {typeof data.delta === "number" && <p>风险变化：{data.delta > 0 ? "+" : ""}{data.delta} 个百分点</p>}
         {data.adherence && <p>依从情况：{adherenceLabels[data.adherence] ?? "未明确"}</p>}

@@ -1,6 +1,8 @@
 """确定性主图路由与问诊、评估、干预、随访、模拟、复查、问答子图。"""
 import asyncio
+import hashlib
 import json
+from collections import OrderedDict
 import logging
 from app.telemetry import span, emit
 import re
@@ -19,7 +21,7 @@ from app.intake import FIELD_LABELS, missing_fields, parse_profile
 from app.llm import template_advice
 from app.memory import load_memory, save_assessment
 from app.prompts import load_prompt
-from app.safety import check_red_flags
+from app.safety import triage
 from app.verify import verify_advice
 from app.web_retrieval import WEB_TOOLS, retrieve_web
 from app.model_gateway import model_scene, model_evidence
@@ -84,6 +86,25 @@ def mark_degraded(data, node, exc):
 class Nodes:
     def __init__(self, mcp, store, kb, llm, mock):
         self.mcp, self.store, self.kb, self.llm, self.mock = mcp, store, kb, llm, mock
+        # 随访恢复时节点从头重跑，已答过的回答不重复调用分诊模型；只缓存成功的判定
+        self.triaged = OrderedDict()
+
+    async def triage(self, text):
+        if self.mock or self.llm is None:
+            return await triage(text)
+        key = hashlib.sha256(text.encode()).hexdigest()
+        if key in self.triaged:
+            self.triaged.move_to_end(key)
+            return self.triaged[key]
+        prompt = load_prompt("triage")
+        verdict = await triage(text, lambda message: self.invoke(prompt.text, {"消息": message}, "triage:" + prompt.version))
+        if verdict.classifier in ("failed", "invalid"):
+            emit("safety.classifier", level="WARNING", status=verdict.classifier, error_type=verdict.error_type)
+        elif verdict.classifier == "ok":
+            self.triaged[key] = verdict
+            while len(self.triaged) > 256:
+                self.triaged.popitem(last=False)
+        return verdict
 
     async def invoke(self, prompt, payload, scene="general"):
         if self.llm is None:
@@ -95,8 +116,8 @@ class Nodes:
         return response.content
 
     async def safety_check(self, state):
-        flags = check_red_flags(state["text"])
-        return result({"red_flags": flags}, red_flags=flags)
+        verdict = await self.triage(state["text"])
+        return result(verdict.event(), red_flags=list(verdict.flags))
 
     async def emergency(self, state):
         text = "这些描述可能涉及急症。请立即拨打120，尽快就医，不要自行驾车；请身边的人陪同并协助联系急救。"
@@ -282,10 +303,10 @@ class Nodes:
             for attempt in range(2 if key == "bp" else 1):
                 answer = interrupt({"key": key, "question": ("没有识别出血压。" if attempt else "") + question,
                                     "step": step, "total": len(questions)})
-                flags = check_red_flags(answer)
-                if flags:
-                    emergency = await self.emergency({"red_flags": flags})
-                    return result({"red_flags": flags}, reply=emergency["reply"])
+                verdict = await self.triage(answer)
+                if verdict.flags:
+                    emergency = await self.emergency({"red_flags": verdict.flags})
+                    return result(verdict.event(), reply=emergency["reply"])
                 if "取消" in answer:
                     return result({"cancelled": True}, reply="已取消本次随访，记录没有变化。")
                 if key == "bp":

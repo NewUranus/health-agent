@@ -63,7 +63,7 @@ class ModelGateway:
         if not 1 <= self.max_calls <= 100 or not 1000 <= self.max_chars <= 500000 or not 1 <= concurrency <= 32:
             raise ValueError("模型调用限额配置超出范围。")
         self.routes = json.loads(os.getenv("QWEN_MODEL_ROUTES", "{}"))
-        if not isinstance(self.routes, dict) or any(key not in {"extract", "answer", "advise", "intent"} or not isinstance(value, str) or not value or len(value) > 200 for key, value in self.routes.items()):
+        if not isinstance(self.routes, dict) or any(key not in {"extract", "answer", "advise", "intent", "triage"} or not isinstance(value, str) or not value or len(value) > 200 for key, value in self.routes.items()):
             raise ValueError("QWEN_MODEL_ROUTES 场景或模型标识无效。")
         self.control = control or Control(concurrency)
 

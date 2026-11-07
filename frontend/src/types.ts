@@ -52,6 +52,10 @@ export interface NodeData extends Record<string, unknown> {
   missing?: string[];
   from_memory?: string[];
   red_flags?: string[];
+  source?: "rule" | "model" | "none";
+  classifier?: "not_needed" | "skipped" | "ok" | "failed" | "invalid";
+  evidence?: string;
+  classifier_failed?: boolean;
   route?: string;
   reason?: string;
   ok?: boolean;
