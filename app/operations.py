@@ -7,6 +7,7 @@ import time
 from fastapi import Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
+from app import guests
 from app.auth import AuthFailure
 from app.result_cache import cache_snapshot
 from app.telemetry import status as log_status
@@ -30,6 +31,7 @@ def snapshot(database):
         reviews = execute("SELECT COUNT(*) AS count FROM hp_task_reviews WHERE disposition = 'needs_support'").fetchone()["count"]
         costs = execute("SELECT SUM(c.cost_microusd) AS cost_microusd, COUNT(*) AS priced_calls FROM hp_model_costs c JOIN hp_model_usage u ON u.id = c.usage_id WHERE u.at >= ?", (current - 86400,)).fetchone()
         cache = cache_snapshot(execute)
+        guest = guests.snapshot(execute)
     counts = {row["status"]: row["count"] for row in rows}
     oldest = next((max(0, current - row["oldest"] // 1000000000) for row in rows if row["status"] == "pending"), 0)
     alerts = []
@@ -43,7 +45,7 @@ def snapshot(database):
         "workers": [dict(row) for row in workers], "oldest_pending_seconds": oldest, "stale_tasks": stale,
         "completed_24h": recent["completed"], "average_completion_seconds_24h": float(recent["average_ns"] or 0) / 1000000000,
         "failures_24h": [dict(row) for row in failures], "needs_support": reviews,
-        "admission_paused": bool(paused and paused["value"] == "1"), "costs_24h": dict(costs), "cache": cache, "alerts": alerts}
+        "admission_paused": bool(paused and paused["value"] == "1"), "costs_24h": dict(costs), "cache": cache, "guest": guest, "alerts": alerts}
 
 
 class AdmissionUpdate(BaseModel):
@@ -96,6 +98,12 @@ def attach_operations(router):
                 execute("UPDATE hp_system_settings SET value = ? WHERE name = 'admission_paused'", ("1" if body.paused else "0",))
                 database._audit(execute, "knowledge-admin", "queue.paused" if body.paused else "queue.resumed", "admission", request.state.request_id, 200)
         await asyncio.to_thread(save)
+        return {"paused": body.paused}
+
+    @router.patch("/admin/guest", summary="暂停或恢复免登录体验，已开启的游客会话不能再提交新消息")
+    async def guest_admission(request: Request, body: AdmissionUpdate):
+        database = require_database(request)
+        await asyncio.to_thread(guests.set_paused, database, body.paused, request.state.request_id)
         return {"paused": body.paused}
 
     @router.patch("/admin/queue/{task_id}/priority", summary="调整尚未执行任务的调度优先级")

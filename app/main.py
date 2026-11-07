@@ -4,7 +4,7 @@ import json
 import os
 import re
 import time
-from contextlib import aclosing, asynccontextmanager
+from contextlib import aclosing, asynccontextmanager, suppress
 from pathlib import Path
 from typing import Literal
 
@@ -35,9 +35,11 @@ from app.knowledge_archive import attach_knowledge_archive
 from app.conversations import attach_conversations
 from app.operations import attach_operations
 from app.log_api import attach_log_api
-from app.telemetry import runtime as telemetry_runtime, TraceMiddleware
+from app.telemetry import emit, runtime as telemetry_runtime, TraceMiddleware
+from app import guests
 from app.runtime_config import settings, record as record_config
 
+GUEST_PURGE_SECONDS = 900
 ROOT = Path(__file__).resolve().parent.parent
 API_VERSION = "v1"
 API_PREFIX = "/api/v1"
@@ -109,6 +111,7 @@ def create_app():
     mock = os.getenv("HEALTH_AGENT_MOCK") == "1"
     required = auth_required(mock)
     runtime = settings()
+    guests.policy()  # 游客配置无效时拒绝启动
     task_timeout = int(os.getenv("HEALTH_AGENT_TASK_TIMEOUT", "300"))
     if not 1 <= task_timeout <= 3600:
         raise ValueError("HEALTH_AGENT_TASK_TIMEOUT 须为 1–3600 秒。")
@@ -117,6 +120,15 @@ def create_app():
         raise ValueError("HEALTH_AGENT_TASK_WORKER 只支持 embedded 或 external。")
     if required and embedded_worker == "external" and not os.getenv("DATABASE_URL"):
         raise ValueError("独立 Worker 模式需要 DATABASE_URL。")
+
+    async def purge_guests(database, agent):
+        """定期删除到期游客的数据；多个 API 进程同时执行也只是重复删除。"""
+        while True:
+            try:
+                await guests.purge_expired(database, agent.store, agent.checkpointer)
+            except Exception as exc:
+                emit("guest.purge_failed", level="WARNING", error_type=type(exc).__name__, status="degraded")
+            await asyncio.sleep(GUEST_PURGE_SECONDS)
 
     @asynccontextmanager
     async def lifespan(application):
@@ -135,9 +147,14 @@ def create_app():
                 runner = TaskRunner(application.state.task_store, agent, workers=runtime["HEALTH_AGENT_TASK_WORKERS"], timeout=task_timeout) if required and embedded_worker == "embedded" else None
                 if runner:
                     await runner.start()
+                janitor = asyncio.create_task(purge_guests(application.state.auth_store, agent)) if required else None
                 try:
                     yield
                 finally:
+                    if janitor:
+                        janitor.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await janitor
                     if runner:
                         await runner.close()
 
@@ -266,7 +283,7 @@ def create_app():
             return {"accounts": []}
         def read():
             with application.state.auth_store.connection() as execute:
-                rows = execute("SELECT id, username, role, created_at FROM hp_users ORDER BY username LIMIT 500").fetchall()
+                rows = execute("SELECT id, username, role, created_at FROM hp_users WHERE role != 'guest' ORDER BY username LIMIT 500").fetchall()
             return [{"id": row["id"], "username": row["username"],
                      "role": row["role"] if row["role"] in {"user", "knowledge_admin", "ops_admin"} else "user",
                      "created_at": row["created_at"]} for row in rows]

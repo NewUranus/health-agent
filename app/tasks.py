@@ -6,7 +6,8 @@ import logging
 import time
 import uuid
 
-from app.auth import AuthFailure, digest
+from app import guests
+from app.auth import GUEST_ROLE, AuthFailure, digest
 from app.http_security import request_id_context
 from app.telemetry import bind, carrier, extract, span, traced, emit, opaque_id
 from app.task_context import TaskExecution, task_execution
@@ -94,6 +95,11 @@ class TaskStore:
                 return self.public(existing), False
             if execute("SELECT value FROM hp_system_settings WHERE name = 'admission_paused'").fetchone()["value"] == "1":
                 raise AuthFailure(503, "ADMISSION_PAUSED", "服务暂时停止接收新任务，请稍后重试。已有任务继续执行。")
+            owner = execute("SELECT role FROM hp_users WHERE id = ?", (user_id,)).fetchone()
+            if owner and owner["role"] == GUEST_ROLE:
+                if payload.get("web_search"):
+                    raise guests.login_required("联网搜索")
+                guests.consume_message(execute, user_id)
             counts = execute("SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN user_id = ? THEN 1 ELSE 0 END), 0) AS owned FROM hp_tasks WHERE status IN ('pending', 'running')", (user_id,)).fetchone()
             if counts["total"] >= self.queue_limit or counts["owned"] >= self.user_queue_limit:
                 raise AuthFailure(429, "QUEUE_CAPACITY", "任务队列已达到容量限制，请等待已有任务完成后再提交。")

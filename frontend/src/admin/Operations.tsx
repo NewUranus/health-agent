@@ -6,7 +6,8 @@ type Overview = { release: string; tasks: Record<string, number>; workers: { id:
   needs_support: number; admission_paused: boolean; costs_24h: { cost_microusd: number | null; priced_calls: number };
   alerts: { code: string; message: string; level: string }[]; failures_24h: { error_code: string; count: number }[];
   // 旧版后端不返回缓存统计；滚动发布期间前端可能先于后端更新
-  cache?: { tools: CacheCounter; vectors: CacheCounter } };
+  cache?: { tools: CacheCounter; vectors: CacheCounter };
+  guest?: { enabled: boolean; paused: boolean; active: number; messages_today: number; daily_limit: number; per_guest_limit: number; hours: number } };
 type CacheCounter = { hits: number; misses: number; saved: number };
 type Audit = { id: string; at: number; action: string; actor: string; resource: string; request_id: string; status: number };
 type Queued = { id: string; status: string; priority: number; request_id: string };
@@ -71,6 +72,15 @@ export function Operations({ api }: { api: AdminApi }) {
       {overview.cache ? <dl className="admin-stats"><div><dt>风险计算命中 / 未命中 / 省下的调用</dt><dd>{overview.cache.tools.hits} / {overview.cache.tools.misses} / {overview.cache.tools.saved}</dd></div>
         <div><dt>查询向量命中 / 未命中 / 省下的调用</dt><dd>{overview.cache.vectors.hits} / {overview.cache.vectors.misses} / {overview.cache.vectors.saved}</dd></div></dl>
         : <p>当前服务端版本未提供缓存统计。</p>}
+      {overview.guest && <><h3>免登录体验</h3>
+        <p>{!overview.guest.enabled ? "未开启（HEALTH_AGENT_GUEST=0）" : overview.guest.paused ? "已暂停：首页只显示登录页，游客不能再发送消息。" : "开放中：首页未登录时直接进入体验。"}</p>
+        <dl className="admin-stats"><div><dt>有效游客</dt><dd>{overview.guest.active}</dd></div>
+          <div><dt>今日游客消息 / 上限</dt><dd>{overview.guest.messages_today} / {overview.guest.daily_limit}</dd></div>
+          <div><dt>每位游客额度 · 保留时长</dt><dd>{overview.guest.per_guest_limit} 条 · {overview.guest.hours} 小时</dd></div></dl>
+        {overview.guest.enabled && <button disabled={busy} onClick={() => {
+          if (window.confirm(overview.guest!.paused ? "恢复免登录体验？" : "暂停免登录体验？已开启的游客将不能再发送消息。")) void mutate("/guest", { paused: !overview.guest!.paused });
+        }}>{overview.guest.paused ? "恢复免登录体验" : "暂停免登录体验"}</button>}
+      </>}
       <h3>最近 24 小时失败分类</h3><ul>{overview.failures_24h.map(row => <li key={row.error_code}>{row.error_code || "未分类"}：{row.count}</li>)}</ul>
     </>}
     <h3>人工协助</h3><p>只显示用户标记为需要协助的任务编号和账号，不包含健康正文。标记已处理后从队列移除。</p>

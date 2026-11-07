@@ -16,7 +16,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from typing import Literal
 
-from app.auth import AuthFailure, AuthStore, COOKIE_NAME, SESSION_SECONDS, role_allows_admin, ADMIN_ROLES
+from app.auth import AuthFailure, AuthStore, COOKIE_NAME, GUEST_ROLE, SESSION_SECONDS, role_allows_admin, ADMIN_ROLES
+from app import guests
 from app.knowledge_access import principal
 from app.telemetry import emit, opaque_id
 from structlog.contextvars import bind_contextvars, reset_contextvars
@@ -25,6 +26,7 @@ request_id_context = ContextVar("request_id", default="")
 logger = logging.getLogger(__name__)
 
 RoleName = Literal["user", "knowledge_admin", "ops_admin"]
+SessionRole = Literal["user", "knowledge_admin", "ops_admin", "guest"]
 
 
 class LoginRequest(BaseModel):
@@ -59,13 +61,21 @@ class AccountRoleUpdate(BaseModel):
 class UserInfo(BaseModel):
     id: str
     username: str
-    role: RoleName = "user"
+    role: SessionRole = "user"
+
+
+class GuestQuota(BaseModel):
+    limit: int
+    remaining: int
+    hours: int
+    daily_available: bool
 
 
 class SessionInfo(BaseModel):
     required: bool
     user: UserInfo | None
     expires_at: int | None = None
+    guest: GuestQuota | None = None
 
 
 class LogoutInfo(BaseModel):
@@ -213,6 +223,8 @@ def attach_security(application, router, resource_path, version_headers):
                     request.state.admin_auth = "open"
                     actor = "knowledge-admin"
                     principal.set(None)
+            if required and request.state.user and request.state.user["role"] == GUEST_ROLE and guests.guest_blocked(resource):
+                raise guests.login_required("该功能")
             if required and personal:
                 if not request.state.user:
                     raise AuthFailure(401, "AUTH_REQUIRED", "请先登录。")
@@ -257,9 +269,36 @@ def attach_security(application, router, resource_path, version_headers):
         if not application.state.auth_required:
             return {"required": False, "user": None}
         if not request.state.user:
-            raise AuthFailure(401, "AUTH_REQUIRED", "请先登录。")
-        return {"required": True, "user": {k: request.state.user[k] for k in ("id", "username", "role")},
+            # 告诉首页可以直接进入免登录体验；名额用完或关闭时只显示登录页
+            available = await asyncio.to_thread(guests.availability, application.state.auth_store)
+            return error_response(request, 401, "请先登录。", "AUTH_REQUIRED",
+                                  headers={"X-HealthPilot-Guest": "available"} if available else None)
+        body = {"required": True, "user": {k: request.state.user[k] for k in ("id", "username", "role")},
                 "expires_at": request.state.user["expires_at"]}
+        if request.state.user["role"] == GUEST_ROLE:
+            body["guest"] = await asyncio.to_thread(guests.quota, application.state.auth_store, request.state.user["id"])
+        return body
+
+    @router.post("/auth/guest", response_model=SessionInfo, status_code=201, summary="开启免登录体验，签发临时游客会话")
+    async def guest(request: Request):
+        if not application.state.auth_required:
+            raise AuthFailure(409, "AUTH_DEMO_MODE", "当前为免登录演示模式。")
+        current = request.state.user
+        if current and current["role"] != GUEST_ROLE:
+            raise AuthFailure(409, "ALREADY_SIGNED_IN", "已经登录账号，无需免登录体验。")
+        store = application.state.auth_store
+        if current:
+            body = {"required": True, "user": {k: current[k] for k in ("id", "username", "role")}, "expires_at": current["expires_at"],
+                    "guest": await asyncio.to_thread(guests.quota, store, current["id"])}
+            return JSONResponse(SessionInfo(**body).model_dump(), status_code=200)
+        token, user, expires = await asyncio.to_thread(guests.create, store, guests.client_ip(request),
+                                                       request.cookies.get(COOKIE_NAME), request.state.request_id)
+        body = SessionInfo(required=True, user=UserInfo(**user), expires_at=expires,
+                           guest=await asyncio.to_thread(guests.quota, store, user["id"]))
+        response = JSONResponse(body.model_dump(), status_code=201)
+        response.set_cookie(COOKIE_NAME, token, max_age=expires - int(time.time()), httponly=True,
+                            secure=os.getenv("HEALTH_AGENT_COOKIE_SECURE", "1") != "0", samesite="strict", path="/")
+        return response
 
     @router.post("/auth/login", response_model=SessionInfo, summary="登录并签发可撤销会话")
     async def login(request: Request, body: LoginRequest):
@@ -268,7 +307,7 @@ def attach_security(application, router, resource_path, version_headers):
         # 限制同时执行的密码哈希数量，避免登录突发耗尽进程内存。
         async with application.state.login_slots:
             token, user, expires = await asyncio.to_thread(application.state.auth_store.login,
-                body.username, body.password, request.client.host if request.client else "unknown",
+                body.username, body.password, guests.client_ip(request),
                 request.cookies.get(COOKIE_NAME), request.state.request_id)
         response = JSONResponse(SessionInfo(required=True, user=UserInfo(**user), expires_at=expires).model_dump())
         response.set_cookie(COOKIE_NAME, token, max_age=SESSION_SECONDS, httponly=True,

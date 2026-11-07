@@ -21,11 +21,17 @@ COOKIE_NAME = "healthpilot_session"
 SESSION_SECONDS = 12 * 60 * 60
 ROLES = frozenset({"user", "knowledge_admin", "ops_admin"})
 ADMIN_ROLES = frozenset({"knowledge_admin", "ops_admin"})
+# 免登录体验的临时账号：不能用密码登录，也不能由管理员分配或改成其他角色
+GUEST_ROLE = "guest"
+GUEST_PREFIX = "guest-"
+# 不可能匹配任何 scrypt 结果的占位值
+GUEST_PASSWORD = "!guest"
+SESSION_ROLES = ROLES | {GUEST_ROLE}
 _KNOWLEDGE_ADMIN = frozenset({
     "documents", "document-pairs", "approvals", "knowledge-archives", "text-documents",
     "chunks", "search", "compare", "stats", "model-usage",
 })
-_OPS_ADMIN = frozenset({"operations", "queue", "admission", "audit", "metrics", "logs", "traces", "support"})
+_OPS_ADMIN = frozenset({"operations", "queue", "admission", "guest", "audit", "metrics", "logs", "traces", "support"})
 _SHARED_ADMIN = frozenset({"accounts"})
 
 
@@ -120,6 +126,7 @@ class AuthStore:
                 "CREATE INDEX IF NOT EXISTS hp_audit_request ON hp_audit(request_id)",
                 "CREATE TABLE IF NOT EXISTS hp_model_usage (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES hp_users(id), task_id TEXT, request_id TEXT NOT NULL, at BIGINT NOT NULL, scene TEXT NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL, input_tokens BIGINT, output_tokens BIGINT, duration_ms BIGINT NOT NULL)",
                 "CREATE INDEX IF NOT EXISTS hp_model_usage_at ON hp_model_usage(at)",
+                "CREATE TABLE IF NOT EXISTS hp_guest_usage (scope TEXT PRIMARY KEY, used INTEGER NOT NULL, until_at BIGINT NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS hp_model_costs (usage_id TEXT PRIMARY KEY REFERENCES hp_model_usage(id) ON DELETE CASCADE, cost_microusd BIGINT NOT NULL, pricing_version TEXT NOT NULL)",
             ):
                 execute(statement)
@@ -147,6 +154,8 @@ class AuthStore:
         username = username.strip().lower()
         if not valid_username(username):
             raise ValueError("账号须为 3–64 位英文字母、数字、点、横线或下划线，并以字母或数字开头。")
+        if username.startswith(GUEST_PREFIX):
+            raise ValueError("guest- 开头的账号名保留给免登录体验。")
         if not 12 <= len(password) <= 256:
             raise ValueError("密码须为 12–256 个字符。")
         if role is None:
@@ -186,6 +195,8 @@ class AuthStore:
         username = username.strip().lower()
         if not valid_role(role):
             raise ValueError("角色须为 user、knowledge_admin 或 ops_admin。")
+        if username.startswith(GUEST_PREFIX):
+            raise ValueError("免登录体验账号不能分配角色。")
         with self.connection() as execute:
             user = execute("SELECT id, role FROM hp_users WHERE username = ?", (username,)).fetchone()
             if not user:
@@ -203,7 +214,7 @@ class AuthStore:
             row = execute("SELECT role FROM hp_users WHERE id = ?", (user_id,)).fetchone()
         if not row:
             return None
-        return row["role"] if row["role"] in ROLES else "user"
+        return row["role"] if row["role"] in SESSION_ROLES else "user"
 
     def _reserve_attempt(self, username, client):
         now = int(time.time())
@@ -222,6 +233,9 @@ class AuthStore:
         self._reserve_attempt(username, client)
         with self.connection() as execute:
             user = execute("SELECT * FROM hp_users WHERE username = ?", (username,)).fetchone()
+        if user and user["role"] == GUEST_ROLE:
+            # 游客账号没有密码，按账号不存在处理，耗时与普通失败一致
+            user = None
         stored = user["password_hash"] if user else self.dummy_hash
         matched = hmac.compare_digest(password_hash(password, stored.split("$")[1]), stored)
         if not user or not matched:
@@ -249,7 +263,7 @@ class AuthStore:
         if not row:
             return None
         data = dict(row)
-        if data.get("role") not in ROLES:
+        if data.get("role") not in SESSION_ROLES:
             data["role"] = "user"
         return data
 

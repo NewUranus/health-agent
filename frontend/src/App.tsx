@@ -26,6 +26,9 @@ const examples = [
 
 export default function App() {
   const auth = useContext(AuthContext);
+  // 免登录体验：可以对话，联网搜索、我的会话、任务记录、导出与改密码需要登录
+  const guest = auth.user?.role === "guest";
+  const member = Boolean(auth.user) && !guest;
   const [session, dispatch] = useReducer(sessionReducer, undefined, () => initialSession(auth.user?.id));
   const [mode, setMode] = useState("正在连接");
   const [activeTask, setActiveTask] = useState<string | null>(null);
@@ -180,6 +183,7 @@ export default function App() {
         activeRequest.current = null;
         setActiveTask(null);
         dispatch({ type: "finish", status });
+        if (guest) auth.refresh?.();
         if (failedTurn) void settleRecovery(text, idempotencyKey, submittedTask);
         textarea.current?.focus();
       }
@@ -237,12 +241,19 @@ export default function App() {
       <div className="header-actions">
         <span className="mode">{mode}</span>
         <button type="button" className="quiet" disabled={session.busy} onClick={() => reset()}>新会话 <span aria-hidden="true">＋</span></button>
-        {auth.user ? <><span className="account-name">{auth.user.username}</span>
+        {guest ? <><span className="account-name guest-quota">免登录体验{auth.guest ? ` · 剩余 ${auth.guest.remaining}/${auth.guest.limit} 条` : ""}</span>
+          <button type="button" disabled={session.busy} onClick={() => auth.requestLogin?.()}>登录</button></>
+          : auth.user ? <><span className="account-name">{auth.user.username}</span>
           <PasswordChange />
           <button type="button" className="quiet" disabled={auth.busy} onClick={auth.logout}>{auth.busy ? "正在退出…" : "退出登录"}</button></>
           : <button type="button" className="quiet" disabled={session.busy} onClick={() => reset(true)}>清除身份</button>}
       </div>
     </header>
+    {guest && <div className="demo-notice guest-notice" role="note">
+      免登录体验 · 请只填写虚拟数据，记录保留 {auth.guest?.hours ?? 24} 小时后自动删除。
+      {auth.guest && auth.guest.remaining === 0 ? "体验额度已用完，" : ""}登录后可使用联网搜索、我的会话、任务记录和导出。
+      {auth.guest && !auth.guest.daily_available && auth.guest.remaining > 0 ? "今天的体验名额已用完，请登录后使用。" : ""}
+    </div>}
     <main>
       <HealthOverview intake={session.intake} risk={session.risk} placeholder={session.profilePlaceholder} followup={session.followup} onSimulate={openSimulation} />
       {session.lastNode !== "checkin_question" && (session.followup.status === "due" || session.followup.status === "overdue") &&
@@ -279,8 +290,8 @@ export default function App() {
             {activeTask && <button type="button" onClick={() => void stopTask()}>停止当前任务</button>}
             {cancelMessage && <p role="status">{cancelMessage}</p>}
             <label className="web-search-toggle">
-              <input type="checkbox" checked={webSearch} disabled={session.busy} onChange={(event) => setWebSearch(event.target.checked)} />
-              联网搜索 / 读取链接
+              <input type="checkbox" checked={webSearch} disabled={session.busy || guest} onChange={(event) => setWebSearch(event.target.checked)} />
+              {guest ? "联网搜索 / 读取链接（登录后可用）" : "联网搜索 / 读取链接"}
             </label>
             {webSearch && <p className="web-search-note">本轮问题会发送给公开搜索网站；粘贴网址可直接读取。请勿填写个人身份信息。网络资料未经医学审核。</p>}
             <div className="examples" aria-label="试试这些示例">
@@ -308,15 +319,15 @@ export default function App() {
             <button type="button" role="tab" aria-selected={panelTab === "trace"} onClick={() => setPanelTab("trace")}>Agent 轨迹<span>{traceCount}</span></button>
             <button type="button" role="tab" aria-selected={panelTab === "simulate"} onClick={() => setPanelTab("simulate")}>干预模拟</button>
             <button type="button" role="tab" aria-selected={panelTab === "history"} onClick={() => setPanelTab("history")}>随访记录</button>
-            {auth.user && <button type="button" role="tab" aria-selected={panelTab === "conversations"} onClick={() => setPanelTab("conversations")}>我的会话</button>}
-            {auth.user && <button type="button" role="tab" aria-selected={panelTab === "tasks"} onClick={() => setPanelTab("tasks")}>任务记录</button>}
+            {member && <button type="button" role="tab" aria-selected={panelTab === "conversations"} onClick={() => setPanelTab("conversations")}>我的会话</button>}
+            {member && <button type="button" role="tab" aria-selected={panelTab === "tasks"} onClick={() => setPanelTab("tasks")}>任务记录</button>}
           </div>
-          {panelTab === "conversations" && auth.user && <ConversationsPanel busy={session.busy} onOpen={page => {
+          {panelTab === "conversations" && member && <ConversationsPanel busy={session.busy} onOpen={page => {
             if (activeRequest.current) return;
             dispatch({ type: "restore_conversation", threadId: page.conversation.thread_id, turns: page.turns });
             setConversationArchived(Boolean(page.conversation.archived)); setInput(""); setHighlighted(null); setWebSearch(false);
           }} />}
-          {panelTab === "tasks" && auth.user && <TasksPanel busy={session.busy} onResume={(task, events) => {
+          {panelTab === "tasks" && member && <TasksPanel busy={session.busy} onResume={(task, events) => {
             if (activeRequest.current) return;
             setConversationArchived(false);
             dispatch({ type: "restore", threadId: task.thread_id, events, waiting: task.status === "waiting_human" });

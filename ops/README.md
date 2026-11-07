@@ -11,6 +11,7 @@
 - `/api/v1/admin/audit?request_id=...`：关联请求审计；最近记录按 100 条分页。
 - `/api/v1/admin/admission`：PATCH `{"paused": true}` 暂停新提交，`false` 恢复；既有任务继续，既有幂等键仍返回原结果。
 - `/api/v1/admin/queue/{task_id}/priority`：PATCH `{"priority": 0}`，范围 0–9，只能改 pending，管理端审计留痕。
+- `/api/v1/admin/guest`：PATCH `{"paused": true}` 暂停免登录体验，首页改为只显示登录页，已开启的游客不能再发送消息；`false` 恢复。运维后台“运行状态”有同样的按钮。
 
 队列容量通过数据库同一行锁检查，覆盖多进程同时提交，不仅靠前端按钮。每账号执行槽仍串行，优先级只改变可领取任务间的顺序。当前没有自动扩缩容或低优先级等待上限保证。
 
@@ -21,6 +22,12 @@
 | `HEALTH_AGENT_USER_QUEUE_LIMIT` | 8 | 单账号 pending + running 上限 |
 | `HEALTH_AGENT_QUEUE_ALERT_SECONDS` | 60 | 管理页排队等待告警阈值 |
 | `HEALTH_AGENT_RELEASE` | local | 展示发布版本；不得放入凭证 |
+| `HEALTH_AGENT_GUEST` | 1 | 登录模式下是否开放免登录体验；`0` 关闭，首页只显示登录页 |
+| `HEALTH_AGENT_GUEST_MESSAGES` | 20 | 每位游客可发送的消息数（整个体验期内） |
+| `HEALTH_AGENT_GUEST_DAILY_MESSAGES` | 200 | 全站游客每天（北京时间）可发送的消息总数；`0` 等同关闭 |
+| `HEALTH_AGENT_GUEST_PER_IP` | 5 | 同一网络 24 小时内可开启的游客数 |
+| `HEALTH_AGENT_GUEST_HOURS` | 24 | 游客会话时长；到期后约 1 小时内删除其全部数据 |
+| `HEALTH_AGENT_TRUSTED_PROXIES` | 回环与私有网段 | 只信任这些地址传来的 `X-Forwarded-For`，用于按网络限流；直接暴露公网时不受伪造头影响 |
 
 Worker 每 5 秒报告心跳，20 秒内有效；一天前的失效心跳自动清理。队列运行参数在启动时校验并保存指纹快照 `hp_config_snapshots`。HTTP 响应头日志采用 JSON，含路由模板、状态、返回响应头耗时及 request_id；SSE 全流程耗时应查看任务完成指标，不记录正文或查询参数。日志集中收集、告警通知和长期归档由部署方接入。
 
