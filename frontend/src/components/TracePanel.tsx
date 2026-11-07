@@ -20,6 +20,26 @@ function safetySummary(data: NodeData): string {
   return "未命中急症关键词，继续问诊。";
 }
 
+function GroundingNote({ data }: { data: NodeData }) {
+  if (data.grounding_skipped) {
+    const reason = data.grounding_skip_reason;
+    if (reason === "mock") return <p>事实校验：Mock 模式未执行。</p>;
+    if (reason === "template") return <p className="success">事实校验：内容逐字摘自资料，无需判定。</p>;
+    return <p className="warning">事实校验未完成（判定模型不可用），回答未经逐句核对。</p>;
+  }
+  const grounding = data.grounding;
+  if (!grounding) return null;
+  const failed = grounding.unsupported.length;
+  if (failed && !grounding.removed) return <p className="warning">事实校验：{failed} 句在资料中找不到依据，已要求重写。</p>;
+  return <>
+    <p className={grounding.removed ? "warning" : "success"}>
+      事实校验：{grounding.checked - failed} 句通过，删除 {grounding.removed} 句{grounding.rewritten ? "（已重写一次）" : ""}
+    </p>
+    {data.grounding_refused && <p className="warning">删除后没有可用内容，已改为拒答。</p>}
+    {data.grounding_fallback && <p className="warning">删除后建议不完整，已改用资料原文。</p>}
+  </>;
+}
+
 function TraceCard({ event, turn, highlighted }: { event: NodeEvent; turn: number; highlighted: string | null }) {
   const data = event.data ?? {};
   const [owner, color] = agents[event.agent] ?? [event.agent, "#80988b"];
@@ -38,6 +58,7 @@ function TraceCard({ event, turn, highlighted }: { event: NodeEvent; turn: numbe
       {event.node === "verify" && <p className={data.ok ? "success" : "warning"}>
         {data.ok ? `引用校验通过 · 第 ${data.attempt} 次` : (data.problems ?? []).join("；")}
       </p>}
+      {(event.node === "answer" || event.node === "verify") && <GroundingNote data={data} />}
       {data.followup && <p>{data.followup}</p>}
       {data.degraded && <p className="warning">{data.web_search ? "回答模型暂不可用，请在来源卡片查看原文。" : "模型暂不可用，已降级为本地模板。"}</p>}
       {data.no_evidence && <p className="warning">没有足够依据，已拒答。</p>}

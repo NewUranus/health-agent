@@ -56,6 +56,11 @@ export interface NodeData extends Record<string, unknown> {
   classifier?: "not_needed" | "skipped" | "ok" | "failed" | "invalid";
   evidence?: string;
   classifier_failed?: boolean;
+  grounding?: { checked: number; unsupported: string[]; removed: number; rewritten: boolean };
+  grounding_skipped?: boolean;
+  grounding_skip_reason?: string;
+  grounding_refused?: boolean;
+  grounding_fallback?: boolean;
   route?: string;
   reason?: string;
   ok?: boolean;
