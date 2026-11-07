@@ -41,6 +41,7 @@ describe("后台角色页签", () => {
       release: "test", tasks: {}, workers: [], oldest_pending_seconds: 0, stale_tasks: 0,
       completed_24h: 0, average_completion_seconds_24h: 0, needs_support: 0, admission_paused: false,
       costs_24h: { cost_microusd: null, priced_calls: 0 }, alerts: [], failures_24h: [],
+      cache: { tools: { hits: 0, misses: 0, saved: 0 }, vectors: { hits: 0, misses: 0, saved: 0 } },
     };
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
       if (url.includes("/admin/operations")) return json(overview);

@@ -5,7 +5,8 @@ type Overview = { release: string; tasks: Record<string, number>; workers: { id:
   oldest_pending_seconds: number; stale_tasks: number; completed_24h: number; average_completion_seconds_24h: number;
   needs_support: number; admission_paused: boolean; costs_24h: { cost_microusd: number | null; priced_calls: number };
   alerts: { code: string; message: string; level: string }[]; failures_24h: { error_code: string; count: number }[];
-  cache: { tools: CacheCounter; vectors: CacheCounter } };
+  // 旧版后端不返回缓存统计；滚动发布期间前端可能先于后端更新
+  cache?: { tools: CacheCounter; vectors: CacheCounter } };
 type CacheCounter = { hits: number; misses: number; saved: number };
 type Audit = { id: string; at: number; action: string; actor: string; resource: string; request_id: string; status: number };
 type Queued = { id: string; status: string; priority: number; request_id: string };
@@ -67,8 +68,9 @@ export function Operations({ api }: { api: AdminApi }) {
       {overview.alerts.map(alert => <p role="alert" className="admin-review" key={alert.code}>{alert.code}：{alert.message}</p>)}
       <p>{Object.entries(overview.tasks).map(([key, value]) => `${statuses[key] ?? key} ${value}`).join(" · ")}</p>
       <h3>计算缓存</h3><p>相同的风险计算和查询向量会在重启和多个 Worker 之间复用。网页搜索不进入缓存。省下的调用等于命中次数。</p>
-      <dl className="admin-stats"><div><dt>风险计算命中 / 未命中 / 省下的调用</dt><dd>{overview.cache.tools.hits} / {overview.cache.tools.misses} / {overview.cache.tools.saved}</dd></div>
+      {overview.cache ? <dl className="admin-stats"><div><dt>风险计算命中 / 未命中 / 省下的调用</dt><dd>{overview.cache.tools.hits} / {overview.cache.tools.misses} / {overview.cache.tools.saved}</dd></div>
         <div><dt>查询向量命中 / 未命中 / 省下的调用</dt><dd>{overview.cache.vectors.hits} / {overview.cache.vectors.misses} / {overview.cache.vectors.saved}</dd></div></dl>
+        : <p>当前服务端版本未提供缓存统计。</p>}
       <h3>最近 24 小时失败分类</h3><ul>{overview.failures_24h.map(row => <li key={row.error_code}>{row.error_code || "未分类"}：{row.count}</li>)}</ul>
     </>}
     <h3>人工协助</h3><p>只显示用户标记为需要协助的任务编号和账号，不包含健康正文。标记已处理后从队列移除。</p>
