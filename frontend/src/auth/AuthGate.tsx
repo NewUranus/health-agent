@@ -1,7 +1,7 @@
 import { createContext, useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { setExpectedUser } from "../lib/api";
 
-export type UserRole = "user" | "knowledge_admin" | "ops_admin" | "guest";
+export type UserRole = "user" | "knowledge_admin" | "ops_admin" | "medical_reviewer" | "guest";
 interface User { id: string; username: string; role: UserRole }
 export interface GuestQuota { limit: number; remaining: number; hours: number; daily_available: boolean }
 interface SessionInfo { required: boolean; user: User | null; expires_at?: number; guest?: GuestQuota | null }
@@ -15,11 +15,11 @@ function notifyTabs() {
 }
 
 function homePath(role: UserRole | undefined) {
-  return role === "knowledge_admin" || role === "ops_admin" ? "/admin" : "/";
+  return role === "knowledge_admin" || role === "ops_admin" || role === "medical_reviewer" ? "/admin" : "/";
 }
 
 function normalizeRole(value: unknown): UserRole {
-  return value === "knowledge_admin" || value === "ops_admin" || value === "user" || value === "guest" ? value : "user";
+  return value === "knowledge_admin" || value === "ops_admin" || value === "medical_reviewer" || value === "user" || value === "guest" ? value : "user";
 }
 
 export function AuthGate({ children, adminPath = false }: { children: ReactNode; adminPath?: boolean }) {
@@ -192,7 +192,7 @@ export function AuthGate({ children, adminPath = false }: { children: ReactNode;
   }
 
   const sessionRole = session?.user?.role;
-  const adminSession = sessionRole === "knowledge_admin" || sessionRole === "ops_admin";
+  const adminSession = sessionRole === "knowledge_admin" || sessionRole === "ops_admin" || sessionRole === "medical_reviewer";
 
   if (phase === "ready" && session) {
     if (session.required && adminPath && !adminSession) {
@@ -223,7 +223,7 @@ export function AuthGate({ children, adminPath = false }: { children: ReactNode;
 
   return <main className="auth-shell"><section className="auth-card" aria-label="账号登录">
     <a className="brand" href="/">✚ HealthPilot</a>
-    <h1>登录健康助手</h1><p>使用管理员为你创建的账号。普通用户进入健康评估；知识或运维管理员进入对应后台。</p>
+    <h1>登录健康助手</h1><p>使用管理员为你创建的账号。普通用户进入健康评估；知识、医学审核或运维管理员进入对应后台。</p>
     {error && <p className="auth-error" role="alert">{error}</p>}
     {phase === "checking" ? <p role="status">正在确认登录状态…</p> : phase === "unavailable"
       ? <button type="button" onClick={() => void check()}>重新连接</button>

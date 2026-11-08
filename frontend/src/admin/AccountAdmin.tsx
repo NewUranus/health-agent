@@ -1,9 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
 
 type Api = <T>(path: string, init?: RequestInit) => Promise<T>;
-type ManagedAccount = { id: string; username: string; role: "user" | "knowledge_admin" | "ops_admin"; created_at: number };
+type ManagedAccount = { id: string; username: string; role: "user" | "knowledge_admin" | "ops_admin" | "medical_reviewer"; created_at: number };
 const ROLE_LABELS: Record<ManagedAccount["role"], string> = {
-  user: "普通用户", knowledge_admin: "知识管理员", ops_admin: "运维管理员",
+  user: "普通用户", knowledge_admin: "知识管理员", ops_admin: "运维管理员", medical_reviewer: "医学审核员",
 };
 
 export function AccountAdmin({ api }: { api: Api }) {

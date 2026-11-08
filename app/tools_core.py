@@ -25,6 +25,39 @@ def framingham_cvd_risk(sex: str, age: int, total_chol_mmol: float, hdl_mmol: fl
             "model": "Framingham 2008 general CVD", "note": "该模型基于美国人群，可能高估中国人群风险；国内推荐 China-PAR。"}
 
 
+def china_par_risk_approx(sex: str, age: int, total_chol_mmol: float, hdl_mmol: float,
+                          sbp: int, bp_treated: bool, smoker: bool, diabetes: bool,
+                          waist_cm: float, north: bool, urban: bool, family_history: bool) -> dict:
+    """使用阜外医院专利公开的两位小数参数计算 China-PAR 近似值。"""
+    if sex not in ("male", "female"):
+        raise ValueError("性别必须为 male 或 female")
+    if not 35 <= age <= 74:
+        raise ValueError("年龄超出 China-PAR 10 年模型适用范围 35–74 岁")
+    _positive(age=age, total_chol_mmol=total_chol_mmol, hdl_mmol=hdl_mmol, sbp=sbp, waist_cm=waist_cm)
+    tc_mg, hdl_mg = total_chol_mmol / 0.0259, hdl_mmol / 0.0259
+    la, ls, ltc, lhdl, lwc = map(math.log, (age, sbp, tc_mg, hdl_mg, waist_cm))
+    if sex == "male":
+        lp = (31.97 * la + (27.39 if bp_treated else 26.15) * ls + 0.62 * ltc - 0.69 * lhdl
+              - 0.71 * lwc + 3.96 * smoker + 0.36 * diabetes + 0.48 * north - 0.16 * urban
+              + 6.22 * family_history - (6.02 if bp_treated else 5.73) * la * ls
+              - 0.94 * la * smoker - 1.53 * la * family_history)
+        mean, survival = 140.68, 0.97
+    else:
+        lp = (24.87 * la + (20.71 if bp_treated else 19.98) * ls + 0.16 * ltc - 0.22 * lhdl
+              + 1.48 * lwc + 0.49 * smoker + 0.57 * diabetes + 0.54 * north
+              - (4.53 if bp_treated else 4.36) * la * ls)
+        mean, survival = 117.26, 0.99
+    risk = round(-math.expm1(math.log(survival) * math.exp(min(lp - mean, 700))) * 100, 2)
+    return {
+        "risk_percent": risk,
+        "level": "low" if risk < 5 else "intermediate" if risk < 10 else "high",
+        "model": "China-PAR 2016（公开舍入参数近似值）",
+        "approximate": True,
+        "parameter_source": "阜外医院专利 CN113643753B / WO2022247903A1 表9",
+        "note": "公开参数经过舍入，与阜外官方计算器可能相差约 2 个百分点；临界值请用官方工具或由医生复核，不能据此自行诊断或用药。",
+    }
+
+
 def bmi(height_cm: float, weight_kg: float) -> dict:
     _positive(height_cm=height_cm, weight_kg=weight_kg)
     value = round(weight_kg / (height_cm / 100) ** 2, 1)

@@ -10,6 +10,7 @@ import { TracePanel } from "./components/TracePanel";
 import { ExecutionProgress } from "./components/ExecutionProgress";
 import { ConversationsPanel } from "./components/ConversationsPanel";
 import { TasksPanel } from "./components/TasksPanel";
+import { MedicalReviewNotices } from "./components/MedicalReviewNotices";
 import { runTask } from "./lib/tasks";
 import { recoveryMode, recoveryNote, type RecoveryMode } from "./lib/recovery";
 import { createSseParser } from "./lib/sse";
@@ -255,6 +256,7 @@ export default function App() {
       {auth.guest && !auth.guest.daily_available && auth.guest.remaining > 0 ? "今天的体验名额已用完，请登录后使用。" : ""}
     </div>}
     <main>
+      {member && <MedicalReviewNotices refreshKey={`${session.threadId}:${session.turn}:${session.busy}`} />}
       <HealthOverview intake={session.intake} risk={session.risk} placeholder={session.profilePlaceholder} followup={session.followup} onSimulate={openSimulation} />
       {session.lastNode !== "checkin_question" && (session.followup.status === "due" || session.followup.status === "overdue") &&
         <div className="followup-reminder" role="alert">

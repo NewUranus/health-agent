@@ -65,6 +65,8 @@ class HealthAgent:
                 self.kb = PgKnowledgeBase(url, make_embedder(self.mock)) if url else MemoryKnowledgeBase(make_embedder(self.mock))
             self.stack.push_async_callback(self.kb.close)
             await self.kb.setup()
+            # 正式模式发布医学资料前必须记录人工审核；Mock 保持测试和演示兼容。
+            self.kb.require_review = not self.mock
             if auth_required(self.mock):
                 results = ResultCache()
                 await asyncio.to_thread(results.setup)

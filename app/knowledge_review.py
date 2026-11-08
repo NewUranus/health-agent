@@ -25,6 +25,8 @@ async def snapshot(kb, conn, doc_id, action, access=None):
     document = await kb.document(conn, doc_id) if conn else kb.public_document(kb.require(doc_id), True)
     if action == "publish" and document["status"] != "draft":
         raise KnowledgeError("只允许修改草稿。")
+    if action == "publish" and kb.require_review and not document.get("reviewed_by", "").strip():
+        raise KnowledgeError("发布前必须填写审核人并保存审核信息。")
     if action == "delete" and document["builtin"]:
         raise KnowledgeError("内置文档不能删除。")
     if action == "withdraw" and (document["status"] != "published" or document.get("withdrawn")):
@@ -45,6 +47,8 @@ async def snapshot(kb, conn, doc_id, action, access=None):
         sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     summary = {"document_id": doc_id, "title": document["title"], "version": document["version"],
         "chunk_count": document["chunk_count"], "action": action,
+        "reviewed_by": document.get("reviewed_by", ""), "reviewed_at": document.get("reviewed_at"),
+        "effective_date": document.get("effective_date", ""),
         "replaced": [{key: row[key] for key in ("id", "title", "version")} for row in replaced],
         "access": access, "risk": {"publish": "发布后内容将进入医学问答检索；同标题同版本类型的旧文档将删除。",
             "delete": "文档和全部片段将永久删除，后续回答无法再检索这些内容。",

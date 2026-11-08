@@ -82,7 +82,9 @@ function TraceCard({ event, turn, highlighted }: { event: NodeEvent; turn: numbe
       </details>)}
       {(data.chunks ?? []).map((chunk, index) => <div key={`${chunk.id}:${index}`} tabIndex={-1}
         className={`source-card${highlighted === `${turn}:${chunk.id}` ? " highlight" : ""}`}>
-        <b>{chunk.title}</b><p>{chunk.source}</p>{chunk.document_id != null && <p>文档 {chunk.document_id} · {chunk.version || "未标版本"} · 修订 {chunk.revision ?? 1}</p>}{chunk.page != null && <p>第 {chunk.page} 页</p>}<p>相关度 {Number(chunk.score).toFixed(3)}</p>
+        <b>{chunk.title}</b><p>{chunk.source}</p>{chunk.document_id != null && <p>文档 {chunk.document_id} · {chunk.version || "未标版本"} · 修订 {chunk.revision ?? 1}</p>}
+        {chunk.document_id != null && <p className={chunk.reviewed_by ? "success" : "warning"}>{chunk.reviewed_by ? `已由 ${chunk.reviewed_by} 核对${chunk.effective_date ? ` · 生效日期 ${chunk.effective_date}` : ""}` : "该依据尚未经人工核对"}</p>}
+        {chunk.page != null && <p>第 {chunk.page} 页</p>}<p>相关度 {Number(chunk.score).toFixed(3)}</p>
         {chunk.text && <details open={highlighted === `${turn}:${chunk.id}`}><summary>查看依据原文</summary><p className="source-text">{chunk.text}</p></details>}
         {chunk.origin === "web" && <>
           <p className="warning">网络资料 · 未经医学审核</p>

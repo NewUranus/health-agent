@@ -223,6 +223,9 @@ class Nodes:
         profile = state["profile"]
         args = risk_args(profile)
         calls = [("cvd_risk", args), ("bp_category", {"sbp": profile["sbp"], "dbp": profile.get("dbp", 0)}), ("project_trajectory", args)]
+        china_fields = ("waist_cm", "north", "urban", "family_history")
+        if 35 <= profile["age"] <= 74 and all(field in profile for field in china_fields):
+            calls.append(("china_par_risk_approx", args | {field: profile[field] for field in china_fields}))
         if "height_cm" in profile and "weight_kg" in profile:
             calls.append(("bmi", {key: profile[key] for key in ("height_cm", "weight_kg")}))
         trace = await asyncio.gather(*(self.mcp.call_with_trace(name, values) for name, values in calls))
@@ -302,6 +305,10 @@ class Nodes:
         await save_assessment(self.store, state["user_id"], state["profile"], risk, plan)
         level = {"low": "低", "intermediate": "中", "high": "高"}[risk["level"]]
         lines = ["## 评估结果", f"10年心血管病风险：{display_number(risk['risk_percent'])}%（{level}风险）", f"血压分级：{assessment['bp_category']['category']}"]
+        if "china_par_risk_approx" in assessment:
+            china = assessment["china_par_risk_approx"]
+            lines.append(f"China-PAR 10年风险近似值：{display_number(china['risk_percent'])}%（公开舍入参数，仅供复核）")
+            lines.append(china["note"])
         if "bmi" in assessment:
             lines.append(f"BMI：{assessment['bmi']['bmi']}（{assessment['bmi']['category']}）")
         points = [point for point in assessment["project_trajectory"]["points"] if point["years"] in (5, 10)]

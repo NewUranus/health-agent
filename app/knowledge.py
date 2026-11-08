@@ -51,13 +51,17 @@ def make_chunks(doc_id, chunks):
 
 
 def hit(row, score=0):
-    return KnowledgeChunk(row['id'], row['document_title'], row['source'], row['text'], float(score), row['page'], row.get('document_id'), row.get('version', ''), row.get('revision', 1))
+    return KnowledgeChunk(row['id'], row['document_title'], row['source'], row['text'], float(score), row['page'],
+                          row.get('document_id'), row.get('version', ''), row.get('revision', 1),
+                          row.get('reviewed_by', ''), row.get('reviewed_at'), row.get('effective_date', ''))
 
 
 def preview(row):
     vector = row['embedding']
     return {key: row[key] for key in ('id', 'document_id', 'document_title', 'source', 'page', 'heading', 'text')} | {
         'variant': row.get('variant', 'standard'), 'comparison_id': row.get('comparison_id', ''),
+        'reviewed_by': row.get('reviewed_by', ''), 'reviewed_at': row.get('reviewed_at'),
+        'effective_date': row.get('effective_date', ''),
         'dimension': len(vector) if vector is not None else None,
         'vector_preview': [round(x, 4) for x in vector[:8]] if vector is not None else None}
 
@@ -90,6 +94,7 @@ class KnowledgeBase:
         self._query_tasks = {}
         self._query_embedder = embedder
         self.results = None
+        self.require_review = False
 
     async def create_draft(self, title, source, version, chunks, filename):
         documents = await self.create_drafts([{
@@ -193,6 +198,8 @@ class KnowledgeBase:
     async def publication_vectors(self, document):
         if not document['chunks']:
             raise KnowledgeError('文档没有可发布的片段。')
+        if self.require_review and not document.get('reviewed_by', '').strip():
+            raise KnowledgeError('发布前必须填写审核人并保存审核信息。')
         try:
             return await self.embed([document['title'] + ' ' + c['text'] for c in document['chunks']])
         except Exception:
@@ -345,6 +352,7 @@ class MemoryKnowledgeBase(KnowledgeBase):
                 rows = make_chunks(doc_id, draft['chunks'])
                 documents.append({**draft, 'id': doc_id, 'status': 'draft', 'builtin': False,
                                   'created_at': now(), 'published_at': None, 'chunks': rows, 'withdrawn': False, 'visibility': 'shared', 'allowed_user_ids': [], 'revision': 1})
+                documents[-1].update(reviewed_by='', reviewed_at=None, review_note='', effective_date='')
             self.documents.update({d['id']: d for d in documents})
             self.next_id += len(documents)
             return [self.public_document(d, True) for d in documents]
@@ -372,6 +380,13 @@ class MemoryKnowledgeBase(KnowledgeBase):
             if not any(c['id'] == chunk_id for c in document['chunks']):
                 raise KnowledgeError('片段不存在。')
             document['chunks'] = [c for c in document['chunks'] if c['id'] != chunk_id]
+            return self.public_document(document, True)
+
+    async def update_review_metadata(self, doc_id, reviewed_by, review_note='', effective_date=''):
+        async with self.lock:
+            document = self.require(doc_id, True)
+            document.update(reviewed_by=reviewed_by.strip(), reviewed_at=now() if reviewed_by.strip() else None,
+                            review_note=review_note.strip(), effective_date=effective_date.strip())
             return self.public_document(document, True)
 
     async def publish(self, doc_id):
@@ -410,6 +425,7 @@ class MemoryKnowledgeBase(KnowledgeBase):
                     'filename': chunk.id + '.md', 'status': 'published', 'builtin': True, 'content_hash': content_hash(chunk),
                     'created_at': old[chunk.id]['created_at'] if chunk.id in old else now(), 'published_at': now(),
                     **{key: old.get(chunk.id, {}).get(key, default) for key, default in [('withdrawn', False), ('visibility', 'shared'), ('allowed_user_ids', []), ('revision', 1)]},
+                    **{key: old.get(chunk.id, {}).get(key, default) for key, default in [('reviewed_by', ''), ('reviewed_at', None), ('review_note', ''), ('effective_date', '')]},
                     'chunks': [{'id': chunk.id, 'document_id': doc_id, 'seq': 0, 'page': chunk.page,
                                 'heading': chunk.title, 'text': chunk.text, 'embedding': vector}]}
             ids = {c.id for c in chunks}
@@ -419,7 +435,8 @@ class MemoryKnowledgeBase(KnowledgeBase):
 
     async def published_rows(self, document_id=None):
         return [copy.deepcopy(c) | {'document_title': d['title'], 'source': d['source'],
-                                   'variant': d.get('variant', 'standard'), 'comparison_id': d.get('comparison_id', ''), 'version': d.get('version', ''), 'revision': d.get('revision', 1)}
+                                   'variant': d.get('variant', 'standard'), 'comparison_id': d.get('comparison_id', ''), 'version': d.get('version', ''), 'revision': d.get('revision', 1),
+                                   'reviewed_by': d.get('reviewed_by', ''), 'reviewed_at': d.get('reviewed_at'), 'effective_date': d.get('effective_date', '')}
                 for d in sorted(self.documents.values(), key=lambda d: d['id'])
                 if d['status'] == 'published' and allowed(d) and (document_id is None or d['id'] == document_id)
                 for c in sorted(d['chunks'], key=lambda c: c['seq'])]
@@ -468,6 +485,10 @@ class PgKnowledgeBase(KnowledgeBase):
             await conn.execute("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'shared'")
             await conn.execute("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS allowed_user_ids JSONB NOT NULL DEFAULT '[]'::jsonb")
             await conn.execute("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1")
+            await conn.execute("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS reviewed_by TEXT NOT NULL DEFAULT ''")
+            await conn.execute("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS reviewed_at TEXT")
+            await conn.execute("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS review_note TEXT NOT NULL DEFAULT ''")
+            await conn.execute("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS effective_date TEXT NOT NULL DEFAULT ''")
             await conn.execute('''CREATE TABLE IF NOT EXISTS knowledge_chunks (
                 id TEXT PRIMARY KEY CHECK (id ~ '^[[:alnum:]_-]+$'),
                 document_id BIGINT NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
@@ -523,7 +544,9 @@ class PgKnowledgeBase(KnowledgeBase):
     async def list_documents(self):
         async with self.connection() as conn:
             rows = await (await conn.execute('''SELECT d.id, d.title, d.source, d.version, d.filename,
-                d.status, d.builtin, d.variant, d.comparison_id, d.withdrawn, d.visibility, d.allowed_user_ids, d.revision, d.created_at, d.published_at, COUNT(c.id) AS chunk_count
+                d.status, d.builtin, d.variant, d.comparison_id, d.withdrawn, d.visibility, d.allowed_user_ids, d.revision,
+                d.reviewed_by, d.reviewed_at, d.review_note, d.effective_date,
+                d.created_at, d.published_at, COUNT(c.id) AS chunk_count
                 FROM knowledge_documents d LEFT JOIN knowledge_chunks c ON c.document_id = d.id
                 GROUP BY d.id ORDER BY d.id''')).fetchall()
             for row in rows:
@@ -549,6 +572,16 @@ class PgKnowledgeBase(KnowledgeBase):
             cursor = await conn.execute('DELETE FROM knowledge_chunks WHERE document_id = %s AND id = %s', (doc_id, chunk_id))
             if not cursor.rowcount:
                 raise KnowledgeError('片段不存在。')
+            return await self.document(conn, doc_id)
+
+    async def update_review_metadata(self, doc_id, reviewed_by, review_note='', effective_date=''):
+        async with self.connection() as conn:
+            await self.lock_writes(conn)
+            await self.document(conn, doc_id, True)
+            await conn.execute('''UPDATE knowledge_documents
+                SET reviewed_by = %s, reviewed_at = %s, review_note = %s, effective_date = %s
+                WHERE id = %s''', (reviewed_by.strip(), now() if reviewed_by.strip() else None,
+                                   review_note.strip(), effective_date.strip(), doc_id))
             return await self.document(conn, doc_id)
 
     async def publish(self, doc_id):
@@ -611,7 +644,8 @@ class PgKnowledgeBase(KnowledgeBase):
         async with self.connection() as conn:
             rows = await (await conn.execute("""SELECT c.id, c.document_id, c.seq, c.page, c.heading, c.text,
                 c.embedding::text AS embedding, d.title AS document_title, d.source, d.variant, d.comparison_id,
-                d.version, d.revision FROM knowledge_chunks c JOIN knowledge_documents d ON d.id = c.document_id
+                d.version, d.revision, d.reviewed_by, d.reviewed_at, d.effective_date
+                FROM knowledge_chunks c JOIN knowledge_documents d ON d.id = c.document_id
                 WHERE d.status = 'published' """ + access + " AND (%s::bigint IS NULL OR c.document_id = %s) ORDER BY d.id, c.seq",
                 (*args, document_id, document_id))).fetchall()
             for row in rows:
@@ -623,6 +657,7 @@ class PgKnowledgeBase(KnowledgeBase):
         async with self.connection() as conn:
             rows = await (await conn.execute("""SELECT * FROM (
                 SELECT c.id, c.document_id, c.page, c.text, d.title AS document_title, d.source, d.version, d.revision,
+                    d.reviewed_by, d.reviewed_at, d.effective_date,
                     1 - (c.embedding <=> %s::vector) AS score
                 FROM knowledge_chunks c JOIN knowledge_documents d ON d.id = c.document_id
                 WHERE d.status = 'published' AND c.embedding IS NOT NULL AND vector_dims(c.embedding) = %s """ + access + """

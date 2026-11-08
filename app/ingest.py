@@ -9,7 +9,7 @@ class IngestError(ValueError):
     """可直接展示给上传者的解析错误。"""
 
 
-def parse_pdf(data: bytes) -> list[dict]:
+def parse_pdf(data: bytes, page_from: int | None = None, page_to: int | None = None) -> list[dict]:
     try:
         document = pymupdf.open(stream=data, filetype="pdf")
     except Exception:
@@ -21,8 +21,12 @@ def parse_pdf(data: bytes) -> list[dict]:
             raise IngestError("PDF 已加密，请先解除密码。")
         if document.page_count > 500:
             raise IngestError("PDF 超过 500 页，请拆分后上传。")
+        first = 1 if page_from is None else page_from
+        last = document.page_count if page_to is None else page_to
+        if first < 1 or last < first or first > document.page_count or last > document.page_count:
+            raise IngestError(f"页码范围必须在 1–{document.page_count} 页内，且起始页不能大于结束页。")
         try:
-            pages = [{"page": i + 1, "text": page.get_text()} for i, page in enumerate(document)]
+            pages = [{"page": i + 1, "text": document[i].get_text()} for i in range(first - 1, last)]
         except Exception:
             raise IngestError("文件不是有效的 PDF。") from None
         if not pages or sum(len(re.sub(r"\s", "", p["text"])) for p in pages) < 20 * len(pages):

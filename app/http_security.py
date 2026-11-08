@@ -25,8 +25,8 @@ from structlog.contextvars import bind_contextvars, reset_contextvars
 request_id_context = ContextVar("request_id", default="")
 logger = logging.getLogger(__name__)
 
-RoleName = Literal["user", "knowledge_admin", "ops_admin"]
-SessionRole = Literal["user", "knowledge_admin", "ops_admin", "guest"]
+RoleName = Literal["user", "knowledge_admin", "ops_admin", "medical_reviewer"]
+SessionRole = Literal["user", "knowledge_admin", "ops_admin", "medical_reviewer", "guest"]
 
 
 class LoginRequest(BaseModel):
@@ -180,7 +180,7 @@ def attach_security(application, router, resource_path, version_headers):
         store = application.state.auth_store
         required = application.state.auth_required
         admin = bool(resource and (resource == "/admin" or resource.startswith("/admin/")))
-        personal = bool(resource and (resource in {"/chat", "/history", "/followup", "/tasks", "/conversations"} or resource.startswith(("/tools/", "/tasks/", "/conversations/"))))
+        personal = bool(resource and (resource in {"/chat", "/history", "/followup", "/tasks", "/conversations", "/review-notices"} or resource.startswith(("/tools/", "/tasks/", "/conversations/"))))
         audited = required and bool(admin or personal or (resource and resource.startswith("/auth/")))
         actor = None
         knowledge_token = principal.set("")

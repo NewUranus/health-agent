@@ -29,6 +29,9 @@ export interface Source {
   document_id?: number | null;
   version?: string;
   revision?: number;
+  reviewed_by?: string;
+  reviewed_at?: string | null;
+  effective_date?: string;
   id: string;
   title: string;
   source: string;

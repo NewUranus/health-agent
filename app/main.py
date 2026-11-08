@@ -35,6 +35,7 @@ from app.knowledge_archive import attach_knowledge_archive
 from app.conversations import attach_conversations
 from app.operations import attach_operations
 from app.log_api import attach_log_api
+from app.medical_review import MedicalReviewStore, attach_medical_review_api
 from app.telemetry import emit, runtime as telemetry_runtime, TraceMiddleware
 from app import guests
 from app.runtime_config import settings, record as record_config
@@ -50,7 +51,7 @@ def v1_resource_path(path: str) -> str | None:
     for prefix in (API_PREFIX, "/api"):
         if path.startswith(prefix + "/"):
             resource = path[len(prefix):]
-            if resource.split("/", 2)[1] in {"health", "chat", "history", "followup", "tools", "admin", "auth", "tasks", "conversations", "ready"}:
+            if resource.split("/", 2)[1] in {"health", "chat", "history", "followup", "tools", "admin", "auth", "tasks", "conversations", "review-notices", "ready"}:
                 return resource
     return None
 
@@ -62,6 +63,13 @@ class MemoryPDFParser(MultiPartParser):
 
 class ChunkUpdate(BaseModel):
     text: str
+
+
+class KnowledgeReviewUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reviewed_by: str = Field(min_length=1, max_length=120)
+    review_note: str = Field(default="", max_length=2000)
+    effective_date: str = Field(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$")
 
 
 class ChatRequest(BaseModel):
@@ -84,6 +92,13 @@ class RiskRequest(ToolRequest):
     bp_treated: bool
     smoker: bool
     diabetes: bool
+
+
+class ChinaPARRequest(RiskRequest):
+    waist_cm: float = Field(gt=0)
+    north: bool
+    urban: bool
+    family_history: bool
 
 
 class BMIRequest(ToolRequest):
@@ -139,6 +154,8 @@ def create_app():
                 application.state.login_slots = asyncio.Semaphore(2)
                 application.state.task_store = TaskStore(application.state.auth_store)
                 await asyncio.to_thread(application.state.task_store.setup)
+                application.state.medical_reviews = MedicalReviewStore(application.state.auth_store)
+                await asyncio.to_thread(application.state.medical_reviews.setup)
                 await asyncio.to_thread(record_config, application.state.auth_store, runtime)
                 application.state.approval_store = ApprovalStore(application.state.auth_store)
                 await asyncio.to_thread(application.state.approval_store.setup)
@@ -176,6 +193,7 @@ def create_app():
     attach_conversations(api_v1)
     attach_operations(api_v1)
     attach_log_api(api_v1)
+    attach_medical_review_api(api_v1)
 
     @application.exception_handler(KnowledgeError)
     async def knowledge_error(request: Request, exc):
@@ -215,7 +233,7 @@ def create_app():
                     raise HTTPException(413, "文件超过 20MB，请拆分后上传。")
                 yield part
 
-        parser = MemoryPDFParser(request.headers, limited_stream(), max_files=1, max_fields=3)
+        parser = MemoryPDFParser(request.headers, limited_stream(), max_files=1, max_fields=5)
         try:
             form = await parser.parse()
         except MultiPartException:
@@ -231,18 +249,29 @@ def create_app():
             source, version = form.get("source", ""), form.get("version", "")
             if not isinstance(source, str) or not isinstance(version, str):
                 raise HTTPException(400, "来源和版本必须为文本。")
+            def page_value(name):
+                value = form.get(name, "")
+                if not isinstance(value, str):
+                    raise HTTPException(400, "页码范围必须为整数。")
+                if not value.strip():
+                    return None
+                if not value.isdigit():
+                    raise HTTPException(400, "页码范围必须为正整数。")
+                return int(value)
+            page_from, page_to = page_value("page_from"), page_value("page_to")
             data = await file.read(20 * 1024 * 1024 + 1)
             if len(data) > 20 * 1024 * 1024:
                 raise HTTPException(413, "文件超过 20MB，请拆分后上传。")
             try:
-                pages = await asyncio.to_thread(parse_pdf, data)
+                pages = await asyncio.to_thread(parse_pdf, data, page_from, page_to)
                 chunks = await asyncio.to_thread(chunk_pages, pages)
             except IngestError as exc:
                 raise HTTPException(400, str(exc)) from None
             if not chunks:
                 raise HTTPException(400, "没有可用的文字片段。")
             file_hash = payload_hash({"bytes": data.hex(), "name": file.filename or ""})
-            fields = {"title": title.strip(), "source": source, "version": version, "file": file_hash}
+            fields = {"title": title.strip(), "source": source, "version": version, "file": file_hash,
+                      "page_from": page_from, "page_to": page_to}
             if request.url.path.endswith('/document-pairs'):
                 async def create_pair():
                     cleaned = await asyncio.to_thread(clean_pages, pages)
@@ -261,6 +290,11 @@ def create_app():
     @api_v1.get("/admin/documents")
     async def documents():
         return {"documents": await application.state.agent.kb.list_documents()}
+
+    @api_v1.patch("/admin/documents/{doc_id}/review")
+    async def update_document_review(doc_id: int, body: KnowledgeReviewUpdate):
+        return await application.state.agent.kb.update_review_metadata(
+            doc_id, body.reviewed_by, body.review_note, body.effective_date)
 
     def account_actor(request):
         if not required or request.state.admin_auth not in {"session", "bearer"}:
@@ -285,7 +319,7 @@ def create_app():
             with application.state.auth_store.connection() as execute:
                 rows = execute("SELECT id, username, role, created_at FROM hp_users WHERE role != 'guest' ORDER BY username LIMIT 500").fetchall()
             return [{"id": row["id"], "username": row["username"],
-                     "role": row["role"] if row["role"] in {"user", "knowledge_admin", "ops_admin"} else "user",
+                     "role": row["role"] if row["role"] in {"user", "knowledge_admin", "ops_admin", "medical_reviewer"} else "user",
                      "created_at": row["created_at"]} for row in rows]
         return {"accounts": await asyncio.to_thread(read)}
 
@@ -445,6 +479,10 @@ def create_app():
     @api_v1.post("/tools/cvd_risk", summary="计算十年心血管病风险")
     async def cvd_risk(body: RiskRequest):
         return await forward("cvd_risk", body)
+
+    @api_v1.post("/tools/china_par_risk_approx", summary="计算 China-PAR 十年风险近似值")
+    async def china_par_risk(body: ChinaPARRequest):
+        return await forward("china_par_risk_approx", body)
 
     @api_v1.post("/tools/bmi", summary="计算中国标准 BMI")
     async def bmi(body: BMIRequest):

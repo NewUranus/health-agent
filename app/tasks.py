@@ -12,6 +12,7 @@ from app.http_security import request_id_context
 from app.telemetry import bind, carrier, extract, span, traced, emit, opaque_id
 from app.task_context import TaskExecution, task_execution
 from app.database import schema_lock_sync
+from app.medical_review import enqueue_review
 
 logger = logging.getLogger(__name__)
 TERMINAL = {"succeeded", "waiting_human", "failed", "cancelled", "timed_out", "interrupted"}
@@ -50,6 +51,9 @@ class TaskStore:
                 "CREATE TABLE IF NOT EXISTS hp_workers (id TEXT PRIMARY KEY, slots INTEGER NOT NULL, last_seen BIGINT NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS hp_config_snapshots (id TEXT PRIMARY KEY, at BIGINT NOT NULL, payload TEXT NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS hp_task_reviews (task_id TEXT PRIMARY KEY REFERENCES hp_tasks(id), disposition TEXT NOT NULL, reviewed_at BIGINT NOT NULL, request_id TEXT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS hp_medical_reviews (id TEXT PRIMARY KEY, task_id TEXT NOT NULL UNIQUE REFERENCES hp_tasks(id), user_id TEXT NOT NULL REFERENCES hp_users(id), thread_id TEXT NOT NULL, question TEXT NOT NULL, reply TEXT NOT NULL, risk_level TEXT NOT NULL, risk_percent REAL, reasons TEXT NOT NULL, status TEXT NOT NULL, reviewer_id TEXT, doctor_note TEXT NOT NULL, created_at BIGINT NOT NULL, reviewed_at BIGINT)",
+                "CREATE INDEX IF NOT EXISTS hp_medical_reviews_status ON hp_medical_reviews(status, created_at)",
+                "CREATE INDEX IF NOT EXISTS hp_medical_reviews_user ON hp_medical_reviews(user_id, created_at)",
             ):
                 execute(sql)
             rows = execute("SELECT user_id, thread_id, MAX(created_at) AS updated_at FROM hp_tasks t WHERE NOT EXISTS (SELECT 1 FROM hp_conversations c WHERE c.user_id = t.user_id AND c.thread_id = t.thread_id) GROUP BY user_id, thread_id").fetchall()
@@ -177,6 +181,8 @@ class TaskStore:
         execute("DELETE FROM hp_task_slots WHERE task_id = ?", (row["id"],))
         self.db._audit(execute, row["user_id"], "task." + status, row["id"], row["request_id"],
                        200 if status in {"succeeded", "waiting_human"} else 409)
+        if status in {"succeeded", "waiting_human"}:
+            enqueue_review(execute, row)
 
     def cancel(self, task_id, user_id, request_id):
         with self.db.connection() as execute:

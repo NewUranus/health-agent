@@ -35,6 +35,9 @@ class KnowledgeChunk(Chunk):
     document_id: int | None = None
     version: str = ""
     revision: int = 1
+    reviewed_by: str = ""
+    reviewed_at: str | None = None
+    effective_date: str = ""
 
 
 def evidence_key(chunk):

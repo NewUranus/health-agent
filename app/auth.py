@@ -19,8 +19,8 @@ from app.result_cache import ensure_schema
 ROOT = Path(__file__).resolve().parent.parent
 COOKIE_NAME = "healthpilot_session"
 SESSION_SECONDS = 12 * 60 * 60
-ROLES = frozenset({"user", "knowledge_admin", "ops_admin"})
-ADMIN_ROLES = frozenset({"knowledge_admin", "ops_admin"})
+ROLES = frozenset({"user", "knowledge_admin", "ops_admin", "medical_reviewer"})
+ADMIN_ROLES = frozenset({"knowledge_admin", "ops_admin", "medical_reviewer"})
 # 免登录体验的临时账号：不能用密码登录，也不能由管理员分配或改成其他角色
 GUEST_ROLE = "guest"
 GUEST_PREFIX = "guest-"
@@ -32,6 +32,7 @@ _KNOWLEDGE_ADMIN = frozenset({
     "chunks", "search", "compare", "stats", "model-usage",
 })
 _OPS_ADMIN = frozenset({"operations", "queue", "admission", "guest", "audit", "metrics", "logs", "traces", "support"})
+_MEDICAL_ADMIN = frozenset({"medical-reviews"})
 _SHARED_ADMIN = frozenset({"accounts"})
 
 
@@ -72,6 +73,8 @@ def admin_scope(resource):
         return "knowledge"
     if name in _OPS_ADMIN:
         return "ops"
+    if name in _MEDICAL_ADMIN:
+        return "medical"
     return None
 
 
@@ -80,8 +83,10 @@ def role_allows_admin(role, resource):
     if scope is None or role not in ADMIN_ROLES:
         return False
     if scope == "shared":
-        return True
-    return (role == "knowledge_admin" and scope == "knowledge") or (role == "ops_admin" and scope == "ops")
+        return role in {"knowledge_admin", "ops_admin"}
+    return ((role == "knowledge_admin" and scope == "knowledge")
+            or (role == "ops_admin" and scope == "ops")
+            or (role == "medical_reviewer" and scope == "medical"))
 
 
 class AuthStore:
@@ -161,7 +166,7 @@ class AuthStore:
         if role is None:
             role = "user" if not reset else None
         if role is not None and not valid_role(role):
-            raise ValueError("角色须为 user、knowledge_admin 或 ops_admin。")
+            raise ValueError("角色须为 user、knowledge_admin、ops_admin 或 medical_reviewer。")
         hashed = password_hash(password)
         request_id = request_id or uuid.uuid4().hex
         with self.connection() as execute:
@@ -194,7 +199,7 @@ class AuthStore:
         """更改角色并注销该账号全部会话。角色未变时不写审计。"""
         username = username.strip().lower()
         if not valid_role(role):
-            raise ValueError("角色须为 user、knowledge_admin 或 ops_admin。")
+            raise ValueError("角色须为 user、knowledge_admin、ops_admin 或 medical_reviewer。")
         if username.startswith(GUEST_PREFIX):
             raise ValueError("免登录体验账号不能分配角色。")
         with self.connection() as execute:

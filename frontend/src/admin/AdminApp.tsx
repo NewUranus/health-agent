@@ -9,19 +9,23 @@ import { KnowledgePolicy, ModelUsage } from "./Governance";
 import { AuthContext, type UserRole } from "../auth/AuthGate";
 import { PasswordChange } from "../auth/PasswordChange";
 import { AccountAdmin } from "./AccountAdmin";
+import { MedicalReviews } from "./MedicalReviews";
 
 const KNOWLEDGE_TABS = ["文档", "向量库", "检索测试", "确认记录", "模型用量", "版本档案", "文本导入", "账号"];
 const OPS_TABS = ["运行状态", "日志检索", "账号"];
-const ALL_TABS = [...KNOWLEDGE_TABS, ...OPS_TABS.filter(name => name !== "账号")];
+const MEDICAL_TABS = ["医学审核"];
+const ALL_TABS = [...KNOWLEDGE_TABS, ...OPS_TABS.filter(name => name !== "账号"), ...MEDICAL_TABS];
 
 function tabsForRole(role: UserRole | null | undefined) {
   if (role === "knowledge_admin") return KNOWLEDGE_TABS;
   if (role === "ops_admin") return OPS_TABS;
+  if (role === "medical_reviewer") return MEDICAL_TABS;
   return ALL_TABS;
 }
 
 type Document = {
   withdrawn?: boolean; visibility?: "shared" | "restricted"; allowed_user_ids?: string[]; revision?: number;
+  reviewed_by?: string; reviewed_at?: string | null; review_note?: string; effective_date?: string;
   id: number; title: string; source: string; version: string; filename: string;
   status: "draft" | "published"; builtin: boolean; chunk_count: number;
   created_at: string; published_at: string | null; chunks?: DraftChunk[];
@@ -69,14 +73,14 @@ function documentLabel(document: Document) {
 export default function AdminApp() {
   const auth = useContext(AuthContext);
   const sessionRole = auth.user?.role;
-  const roleSession = sessionRole === "knowledge_admin" || sessionRole === "ops_admin";
+  const roleSession = sessionRole === "knowledge_admin" || sessionRole === "ops_admin" || sessionRole === "medical_reviewer";
   const tabs = tabsForRole(sessionRole);
   const [token, setToken] = useState(storedPassword);
   // 服务器没配置 ADMIN_PASSWORD 时免登录：先不带密码试一次，再决定是否显示登录页
   const [access, setAccess] = useState<"checking" | "open" | "locked">(roleSession ? "open" : "checking");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  const [tab, setTab] = useState(sessionRole === "ops_admin" ? "运行状态" : "文档");
+  const [tab, setTab] = useState(sessionRole === "ops_admin" ? "运行状态" : sessionRole === "medical_reviewer" ? "医学审核" : "文档");
   const [documents, setDocuments] = useState<Document[]>([]);
 
   useEffect(() => {
@@ -130,7 +134,7 @@ export default function AdminApp() {
   }, [access, roleSession]);
   const entered = roleSession || access === "open" || (access === "locked" && !!token);
   useEffect(() => {
-    if (!entered || sessionRole === "ops_admin") return;
+    if (!entered || sessionRole === "ops_admin" || sessionRole === "medical_reviewer") return;
     void refresh().catch(reportError);
   }, [entered, refresh, reportError, sessionRole]);
 
@@ -138,9 +142,9 @@ export default function AdminApp() {
     event.preventDefault(); setError(""); storePassword(password); setToken(password);
   }
 
-  const title = sessionRole === "ops_admin" ? "运维后台" : sessionRole === "knowledge_admin" ? "知识库后台" : "管理后台";
-  const subtitle = sessionRole === "ops_admin" ? "队列、审计与运行观测" : "内容发布前请人工核对";
-  const roleLabel = sessionRole === "ops_admin" ? "运维管理员" : sessionRole === "knowledge_admin" ? "知识管理员" : "";
+  const title = sessionRole === "ops_admin" ? "运维后台" : sessionRole === "knowledge_admin" ? "知识库后台" : sessionRole === "medical_reviewer" ? "医学审核后台" : "管理后台";
+  const subtitle = sessionRole === "ops_admin" ? "队列、审计与运行观测" : sessionRole === "medical_reviewer" ? "核对高风险与降级回答" : "内容发布前请人工核对";
+  const roleLabel = sessionRole === "ops_admin" ? "运维管理员" : sessionRole === "knowledge_admin" ? "知识管理员" : sessionRole === "medical_reviewer" ? "医学审核员" : "";
 
   return <main className="admin-shell">
     <header className="admin-header">
@@ -171,6 +175,7 @@ export default function AdminApp() {
         {tab === "日志检索" && <LogExplorer api={api} />}
         {tab === "运行状态" && <Operations api={api} />}
         {tab === "账号" && <AccountAdmin api={api} />}
+        {tab === "医学审核" && <MedicalReviews api={api} />}
       </section>
     </>}
   </main>;
@@ -190,6 +195,9 @@ function Documents({ api, documents, refresh, reportError, clearError }: Section
   const [uploadNotice, setUploadNotice] = useState("");
   const [policyOpen, setPolicyOpen] = useState(false);
   const [approval, setApproval] = useState<Approval | null>(null);
+  const [reviewedBy, setReviewedBy] = useState("");
+  const [reviewNote, setReviewNote] = useState("");
+  const [effectiveDate, setEffectiveDate] = useState("");
 
   async function requestApproval(documentId: number, action: Approval["action"], access?: AccessPolicy) {
     setApproval(await api<Approval>("/approvals", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -202,6 +210,7 @@ function Documents({ api, documents, refresh, reportError, clearError }: Section
   }
   function select(document: Document) {
     setPolicyOpen(false); setSelected(document); setDirty(new Set()); setSaved(null);
+    setReviewedBy(document.reviewed_by ?? ""); setReviewNote(document.review_note ?? ""); setEffectiveDate(document.effective_date ?? "");
   }
   async function upload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -232,6 +241,14 @@ function Documents({ api, documents, refresh, reportError, clearError }: Section
     });
     setDirty(previous => { const next = new Set(previous); next.delete(chunk.id); return next; });
     setSaved(chunk.id);
+  }
+  async function saveReview() {
+    if (!selected) return;
+    const result = await api<Document>(`/documents/${selected.id}/review`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reviewed_by: reviewedBy, review_note: reviewNote, effective_date: effectiveDate }),
+    });
+    select(result); await refresh(); setSaved("review");
   }
   async function publish() {
     if (!selected) return;
@@ -267,6 +284,8 @@ function Documents({ api, documents, refresh, reportError, clearError }: Section
         <label>标题<input name="title" required /></label>
         <label>来源<input name="source" /></label>
         <label>版本<input name="version" /></label>
+        <label>起始页（可选）<input name="page_from" type="number" min="1" inputMode="numeric" /></label>
+        <label>结束页（可选）<input name="page_to" type="number" min="1" inputMode="numeric" /></label>
         <label>导入方式<select value={paired ? "paired" : "single"} disabled={busy} onChange={e => setPaired(e.target.value === "paired")}>
           <option value="single">普通导入</option>
           <option value="paired">同时生成原始版与清洗版</option>
@@ -303,8 +322,14 @@ function Documents({ api, documents, refresh, reportError, clearError }: Section
         <p className="admin-muted">{selected.source} {selected.version}</p>
         {selected.status === "draft" ? <div className="admin-review">
           <p>请核对表格和数字后再发布</p>
+          <label>审核人<input value={reviewedBy} maxLength={120} required onChange={event => { setReviewedBy(event.target.value); setSaved(null); }} /></label>
+          <label>资料生效日期<input type="date" value={effectiveDate} onChange={event => { setEffectiveDate(event.target.value); setSaved(null); }} /></label>
+          <label>审核说明<textarea value={reviewNote} maxLength={2000} onChange={event => { setReviewNote(event.target.value); setSaved(null); }} /></label>
+          <button disabled={busy || !reviewedBy.trim()} onClick={() => void perform(saveReview)}>保存审核信息</button>
+          {saved === "review" && <span role="status">审核信息已保存</span>}
           <button className="admin-primary" disabled={busy} onClick={() => void publish()}>{publishing ? "发布中…" : "发布"}</button>
-        </div> : <p className="admin-badge">{selected.withdrawn ? "已撤回" : "已发布"}</p>}
+        </div> : <><p className="admin-badge">{selected.withdrawn ? "已撤回" : "已发布"}</p>
+          <p className="admin-muted">{selected.reviewed_by ? `已由 ${selected.reviewed_by} 核对${selected.effective_date ? ` · 生效日期 ${selected.effective_date}` : ""}` : "未经人工核对"}</p></>}
         <div className="admin-actions">
           <button disabled={busy} onClick={() => setPolicyOpen(value => !value)}>访问范围</button>
           {selected.status === "published" && !selected.withdrawn && <button disabled={busy} onClick={() => void perform(() => requestApproval(selected.id, "withdraw"))}>撤回文档</button>}
